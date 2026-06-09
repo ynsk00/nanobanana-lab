@@ -62,13 +62,40 @@ export async function POST(req: NextRequest) {
 
   const ai = new GoogleGenAI({ apiKey });
 
-  // 共通の contents パートを構築。画像→テキストの順で添付する。
-  const imageParts = [...inputImages, ...referenceImages]
-    .map(dataUrlToPart)
-    .filter((p): p is NonNullable<typeof p> => p !== null);
+  // contents パートを構築。各画像の直前に役割ラベルのテキストを入れ、
+  // モデルが @inN / @refN を画像と正しく対応づけられるようにする。
+  const parts: Record<string, unknown>[] = [];
 
-  const parts: Record<string, unknown>[] = [...imageParts];
-  if (prompt?.trim()) parts.push({ text: prompt });
+  if (inputImages.length + referenceImages.length > 0) {
+    parts.push({
+      text:
+        "以下に画像を添付します。@inN は入力画像（編集・合成の対象）、" +
+        "@refN は参照画像（スタイルや要素・構図の参考）です。プロンプト中の " +
+        "@inN / @refN は対応する画像を指します。",
+    });
+  }
+
+  inputImages.forEach((dataUrl, i) => {
+    const part = dataUrlToPart(dataUrl);
+    if (part) {
+      parts.push({ text: `入力画像 @in${i + 1}:` });
+      parts.push(part);
+    }
+  });
+
+  referenceImages.forEach((dataUrl, i) => {
+    const part = dataUrlToPart(dataUrl);
+    if (part) {
+      parts.push({ text: `参照画像 @ref${i + 1}（スタイル/要素の参考。被写体ではなく参考として扱う）:` });
+      parts.push(part);
+    }
+  });
+
+  if (prompt?.trim()) {
+    parts.push({ text: prompt });
+  } else if (parts.length > 0) {
+    parts.push({ text: "上記の入力画像をもとに、参照画像を参考にして画像を生成してください。" });
+  }
 
   const start = Date.now();
 
