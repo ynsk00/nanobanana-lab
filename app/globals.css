@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: #0b0b0f;
+  color: #ededf2;
+}
+
+/* スクロールバーを控えめに */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a44 transparent;
+}
