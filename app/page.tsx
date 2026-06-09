@@ -6,6 +6,7 @@ import { Button, Panel } from "@/components/ui";
 import { PoolGrid } from "@/components/PoolGrid";
 import { ApiKeyModal } from "@/components/ApiKeyModal";
 import { Lightbox, type LightboxImage } from "@/components/Lightbox";
+import { PromptDiff } from "@/components/PromptDiff";
 import { getApiKey, maskKey } from "@/lib/settings";
 import { MODELS, DEFAULT_MODEL_KEY, getModel } from "@/lib/pricing";
 import type {
@@ -88,6 +89,9 @@ export default function Home() {
   // --- 拡大表示 ---
   const [lightbox, setLightbox] = useState<LightboxImage | null>(null);
 
+  // --- 基準（良かった結果）---
+  const [baselineId, setBaselineId] = useState<string | null>(null);
+
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const model = getModel(modelKey);
@@ -115,6 +119,12 @@ export default function Home() {
       setPool(merged.sort((a, b) => b.createdAt - a.createdAt));
       setPrompts(p.sort((a, b) => b.createdAt - a.createdAt));
       setBatches(b.sort((a, b) => b.createdAt - a.createdAt));
+      // 基準バッチIDを復元（存在するもののみ）
+      const savedBaseline =
+        typeof window !== "undefined" ? localStorage.getItem("nbl_baseline_id") : null;
+      if (savedBaseline && b.some((x) => x.id === savedBaseline)) {
+        setBaselineId(savedBaseline);
+      }
     })();
     const k = getApiKey();
     setApiKeyState(k);
@@ -429,6 +439,22 @@ export default function Home() {
   const deleteBatch = useCallback(async (id: string) => {
     await db.del("batches", id);
     setBatches((p) => p.filter((x) => x.id !== id));
+    setBaselineId((cur) => (cur === id ? null : cur));
+    if (typeof window !== "undefined" && localStorage.getItem("nbl_baseline_id") === id) {
+      localStorage.removeItem("nbl_baseline_id");
+    }
+  }, []);
+
+  // 基準（良かった結果）に設定/解除
+  const toggleBaseline = useCallback((id: string) => {
+    setBaselineId((cur) => {
+      const next = cur === id ? null : id;
+      if (typeof window !== "undefined") {
+        if (next) localStorage.setItem("nbl_baseline_id", next);
+        else localStorage.removeItem("nbl_baseline_id");
+      }
+      return next;
+    });
   }, []);
 
   // バッチ内容を編集部へ復元（再編集・再生成）
@@ -507,6 +533,10 @@ export default function Home() {
   }, []);
 
   const totalCost = useMemo(() => batches.reduce((s, b) => s + b.costUsd, 0), [batches]);
+  const baselineBatch = useMemo(
+    () => batches.find((b) => b.id === baselineId) ?? null,
+    [batches, baselineId]
+  );
 
   const fileRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
@@ -647,6 +677,59 @@ export default function Home() {
                 </span>
               }
             >
+              {baselineBatch && (
+                <div className="mb-3 rounded-lg border border-amber-400/40 bg-amber-400/5 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs font-semibold text-amber-300">
+                      ★ 基準（良かった結果）との差分
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        className="px-2 py-0.5 text-[11px]"
+                        onClick={() => setPromptText(baselineBatch.prompt)}
+                        disabled={baselineBatch.prompt === promptText}
+                        title="基準のプロンプトを編集欄に戻す"
+                      >
+                        基準を読込
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        className="px-2 py-0.5 text-[11px]"
+                        onClick={() => toggleBaseline(baselineBatch.id)}
+                      >
+                        解除
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex gap-3">
+                    {baselineBatch.results[0] && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={baselineBatch.results[0].dataUrl}
+                        alt="基準"
+                        className="h-16 w-16 shrink-0 cursor-zoom-in rounded border border-amber-400/40 object-cover"
+                        onClick={() =>
+                          setLightbox({
+                            ...baselineBatch.results[0],
+                            assignable: true,
+                          })
+                        }
+                        title="クリックで拡大"
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <PromptDiff baseline={baselineBatch.prompt} current={promptText} />
+                      <SettingsDiff
+                        baseline={baselineBatch}
+                        currentModel={model.label}
+                        currentAspect={aspectRatio}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {(selectedInputs.length > 0 || selectedRefs.length > 0) && (
                 <div className="mb-3 flex flex-wrap gap-2">
                   {selectedInputs.map((it, i) => (
@@ -831,6 +914,8 @@ export default function Home() {
               <BatchCard
                 key={batch.id}
                 batch={batch}
+                isBaseline={batch.id === baselineId}
+                onToggleBaseline={() => toggleBaseline(batch.id)}
                 onAddToPool={addResultToPool}
                 onOpenImage={setLightbox}
                 onReEdit={() => reEdit(batch)}
@@ -882,6 +967,8 @@ function Chip({
 
 function BatchCard({
   batch,
+  isBaseline,
+  onToggleBaseline,
   onAddToPool,
   onOpenImage,
   onReEdit,
@@ -889,6 +976,8 @@ function BatchCard({
   onDelete,
 }: {
   batch: Batch;
+  isBaseline: boolean;
+  onToggleBaseline: () => void;
   onAddToPool: (dataUrl: string, mimeType: string, role: Role) => void;
   onOpenImage: (img: LightboxImage) => void;
   onReEdit: () => void;
@@ -900,9 +989,18 @@ function BatchCard({
   const usedRefs = used.filter((u) => u.role === "reference");
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/40">
+    <div
+      className={`rounded-xl border bg-zinc-900/40 ${
+        isBaseline ? "border-amber-400 ring-1 ring-amber-400/40" : "border-zinc-800"
+      }`}
+    >
       {/* メタ情報 */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-zinc-800 px-4 py-2.5 text-xs">
+        {isBaseline && (
+          <span className="rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-zinc-900">
+            ★ 基準
+          </span>
+        )}
         <span className="font-semibold text-zinc-200">{batch.modelLabel}</span>
         <span className="text-zinc-500">{batch.aspectRatio}</span>
         <span className="text-zinc-500">
@@ -912,7 +1010,15 @@ function BatchCard({
         <span className="text-zinc-400">⏱ {(batch.durationMs / 1000).toFixed(1)}s</span>
         <span className="text-zinc-600">{new Date(batch.createdAt).toLocaleString("ja-JP")}</span>
         <div className="ml-auto flex items-center gap-1">
-          <Button variant="primary" className="px-2 py-1 text-xs" onClick={onReEdit} title="この内容を編集部へ読み込み">
+          <Button
+            variant={isBaseline ? "primary" : "ghost"}
+            className="px-2 py-1 text-xs"
+            onClick={onToggleBaseline}
+            title="良かった結果として基準に設定（現在のプロンプトとの差分を表示）"
+          >
+            {isBaseline ? "★ 基準中" : "☆ 基準にする"}
+          </Button>
+          <Button variant="default" className="px-2 py-1 text-xs" onClick={onReEdit} title="この内容を編集部へ読み込み">
             ↑ 再編集
           </Button>
           <Button
@@ -1010,6 +1116,33 @@ function BatchCard({
         ))}
       </div>
     </div>
+  );
+}
+
+function SettingsDiff({
+  baseline,
+  currentModel,
+  currentAspect,
+}: {
+  baseline: Batch;
+  currentModel: string;
+  currentAspect: string;
+}) {
+  const diffs: { label: string; from: string; to: string }[] = [];
+  if (baseline.modelLabel !== currentModel)
+    diffs.push({ label: "モデル", from: baseline.modelLabel, to: currentModel });
+  if (baseline.aspectRatio !== currentAspect)
+    diffs.push({ label: "比率", from: baseline.aspectRatio, to: currentAspect });
+  if (diffs.length === 0) return null;
+  return (
+    <p className="mt-1.5 text-[11px] text-zinc-400">
+      {diffs.map((d, i) => (
+        <span key={i} className="mr-3 whitespace-nowrap">
+          {d.label}: <span className="text-red-300 line-through">{d.from}</span> →{" "}
+          <span className="text-emerald-300">{d.to}</span>
+        </span>
+      ))}
+    </p>
   );
 }
 
