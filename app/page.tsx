@@ -64,9 +64,9 @@ export default function Home() {
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [count, setCount] = useState(1);
 
-  // --- 生成中 ---
-  const [generating, setGenerating] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
+  // --- 実行中ジョブ（複数同時実行可） ---
+  const [jobs, setJobs] = useState<{ id: string; startedAt: number; label: string }[]>([]);
+  const [, setTick] = useState(0); // 実行中の経過時間表示を更新するための再描画トリガ
   const [error, setError] = useState<string | null>(null);
 
   // --- APIキー ---
@@ -116,14 +116,12 @@ export default function Home() {
     }
   }, [model, aspectRatio]);
 
-  // 経過タイマー
+  // 実行中ジョブがある間、経過時間表示を更新
   useEffect(() => {
-    if (!generating) return;
-    const t0 = Date.now();
-    setElapsed(0);
-    const timer = setInterval(() => setElapsed(Date.now() - t0), 100);
+    if (jobs.length === 0) return;
+    const timer = setInterval(() => setTick((n) => n + 1), 200);
     return () => clearInterval(timer);
-  }, [generating]);
+  }, [jobs.length]);
 
   // --- プール操作 ---
   const addImagesToPool = useCallback(async (files: FileList | File[]) => {
@@ -265,7 +263,7 @@ export default function Home() {
 
   const estCost = (count * model.pricePerImage).toFixed(3);
 
-  // --- 生成 ---
+  // --- 生成（複数同時実行可。送信時の設定をスナップショットして独立に走らせる） ---
   const generate = useCallback(async () => {
     setError(null);
     if (!apiKey) {
@@ -277,16 +275,30 @@ export default function Home() {
       setError("プロンプトまたは入力画像を指定してください。");
       return;
     }
-    setGenerating(true);
+
+    // この生成の設定を固定（以降のフォーム変更や他ジョブと干渉しない）
+    const jobId = genId("job_");
+    const snap = {
+      prompt: promptText,
+      modelKey,
+      modelLabel: model.label,
+      modelId: model.id,
+      aspectRatio,
+      count,
+      inputs: selectedInputs,
+      refs: selectedRefs,
+    };
+    setJobs((prev) => [...prev, { id: jobId, startedAt: Date.now(), label: `${snap.modelLabel} ×${snap.count}` }]);
+
     try {
       // 送信前圧縮（ボディ上限対策）。原本はプールに残す。
-      let payloadIn = await Promise.all(selectedInputs.map((x) => compressForUpload(x.dataUrl)));
-      let payloadRef = await Promise.all(selectedRefs.map((x) => compressForUpload(x.dataUrl)));
+      let payloadIn = await Promise.all(snap.inputs.map((x) => compressForUpload(x.dataUrl)));
+      let payloadRef = await Promise.all(snap.refs.map((x) => compressForUpload(x.dataUrl)));
       const total = (a: string[], b: string[]) =>
         [...a, ...b].reduce((s, d) => s + approxBytes(d), 0);
       if (total(payloadIn, payloadRef) > MAX_UPLOAD_BYTES) {
-        payloadIn = await Promise.all(selectedInputs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72)));
-        payloadRef = await Promise.all(selectedRefs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72)));
+        payloadIn = await Promise.all(snap.inputs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72)));
+        payloadRef = await Promise.all(snap.refs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72)));
       }
       const totalBytes = total(payloadIn, payloadRef);
       if (totalBytes > MAX_UPLOAD_BYTES) {
@@ -299,10 +311,10 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey },
         body: JSON.stringify({
-          modelKey,
-          aspectRatio,
-          count,
-          prompt: promptText,
+          modelKey: snap.modelKey,
+          aspectRatio: snap.aspectRatio,
+          count: snap.count,
+          prompt: snap.prompt,
           inputImages: payloadIn,
           referenceImages: payloadRef,
         }),
@@ -320,14 +332,14 @@ export default function Home() {
 
       // 履歴（使用画像）を圧縮版スナップショットで保存
       const usedImages: UsedImage[] = [
-        ...selectedInputs.map((x, i) => ({
+        ...snap.inputs.map((x, i) => ({
           id: x.id,
           dataUrl: payloadIn[i],
           mimeType: mimeFromDataUrl(payloadIn[i]),
           name: x.name,
           role: "input" as Role,
         })),
-        ...selectedRefs.map((x, i) => ({
+        ...snap.refs.map((x, i) => ({
           id: x.id,
           dataUrl: payloadRef[i],
           mimeType: mimeFromDataUrl(payloadRef[i]),
@@ -339,12 +351,12 @@ export default function Home() {
       const batch: Batch = {
         id: genId("batch_"),
         createdAt: Date.now(),
-        modelKey,
-        modelLabel: model.label,
-        modelId: model.id,
-        aspectRatio,
-        requestedCount: count,
-        prompt: promptText,
+        modelKey: snap.modelKey,
+        modelLabel: snap.modelLabel,
+        modelId: snap.modelId,
+        aspectRatio: snap.aspectRatio,
+        requestedCount: snap.count,
+        prompt: snap.prompt,
         usedImages,
         results: data.results,
         costUsd: data.costUsd,
@@ -359,7 +371,7 @@ export default function Home() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setGenerating(false);
+      setJobs((prev) => prev.filter((j) => j.id !== jobId));
     }
   }, [apiKey, promptText, selectedInputs, selectedRefs, modelKey, aspectRatio, count, model]);
 
@@ -686,24 +698,29 @@ export default function Home() {
               </div>
 
               <div className="mt-4 flex flex-wrap items-center gap-3">
-                <Button
-                  variant="primary"
-                  onClick={generate}
-                  disabled={generating}
-                  className="px-5 py-2 text-base"
-                >
-                  {generating ? "生成中…" : "✨ 生成する"}
+                <Button variant="primary" onClick={generate} className="px-5 py-2 text-base">
+                  ✨ 生成する{jobs.length > 0 ? `（実行中 ${jobs.length}）` : ""}
                 </Button>
                 <div className="text-xs text-zinc-400">
                   概算コスト <b className="text-amber-400">${estCost}</b>
                   <span className="text-zinc-600"> （{count}枚 × ${model.pricePerImage.toFixed(3)}）</span>
                 </div>
-                {generating && (
-                  <div className="text-xs text-zinc-400">
-                    経過 <b className="tabular-nums text-zinc-200">{(elapsed / 1000).toFixed(1)}s</b>
-                  </div>
-                )}
               </div>
+
+              {jobs.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {jobs.map((j) => (
+                    <span
+                      key={j.id}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/40 bg-amber-400/10 px-2.5 py-1 text-xs text-amber-200"
+                    >
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+                      {j.label}
+                      <b className="tabular-nums">{((Date.now() - j.startedAt) / 1000).toFixed(1)}s</b>
+                    </span>
+                  ))}
+                </div>
+              )}
 
               {error && (
                 <p className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
