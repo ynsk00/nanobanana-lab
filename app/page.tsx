@@ -19,7 +19,6 @@ import type {
 } from "@/lib/types";
 import * as db from "@/lib/db";
 import {
-  approxBytes,
   compressForUpload,
   dataUrlToBlob,
   downloadBlob,
@@ -29,8 +28,45 @@ import {
   mimeFromDataUrl,
 } from "@/lib/image";
 
-// Vercelサーバーレス関数のリクエストボディ上限(約4.5MB)に対する安全マージン
-const MAX_UPLOAD_BYTES = 4_000_000;
+// Vercelサーバーレス関数のリクエストボディ上限(約4.5MB)に対する安全マージン。
+// data URL は base64 文字列としてそのまま送られるため、文字数(≈バイト)で見積もる。
+const MAX_UPLOAD_BYTES = 4_200_000;
+
+// 上限超過時の段階的縮小（高品質→低品質。原本に近い順に試す）
+const UPLOAD_STEPS: [number, number][] = [
+  [3072, 0.95],
+  [2560, 0.92],
+  [2048, 0.9],
+  [1600, 0.86],
+  [1280, 0.82],
+];
+
+/** 送信される文字数(≈バイト)の合計 */
+function payloadLen(arr: string[]) {
+  return arr.reduce((s, d) => s + d.length, 0);
+}
+
+/**
+ * まず原本のまま送れるか判定し、上限を超える場合のみ必要最小限だけ縮小する。
+ * 高品質側から順に試し、最初に上限内に収まった版を返す。
+ */
+async function fitUnderLimit(
+  inputs: string[],
+  refs: string[],
+  limit: number
+): Promise<{ inputs: string[]; refs: string[]; downscaled: boolean }> {
+  if (payloadLen(inputs) + payloadLen(refs) <= limit) {
+    return { inputs, refs, downscaled: false };
+  }
+  let best = { inputs, refs, downscaled: true };
+  for (const [maxSize, q] of UPLOAD_STEPS) {
+    const ci = await Promise.all(inputs.map((d) => compressForUpload(d, maxSize, q)));
+    const cr = await Promise.all(refs.map((d) => compressForUpload(d, maxSize, q)));
+    best = { inputs: ci, refs: cr, downscaled: true };
+    if (payloadLen(ci) + payloadLen(cr) <= limit) return best;
+  }
+  return best; // 最小版でも超える場合はそのまま返し、呼び出し側で判定
+}
 
 interface SelEntry {
   id: string;
@@ -39,13 +75,9 @@ interface SelEntry {
 
 type BatchMode = "combined" | "perInput";
 
-/** ImageItem の配列を圧縮版 data URL の配列にする */
+/** 履歴スナップショット用に控えめに圧縮した data URL 配列を作る（送信用ではない） */
 function compressList(items: ImageItem[], maxSize?: number, quality?: number) {
   return Promise.all(items.map((x) => compressForUpload(x.dataUrl, maxSize, quality)));
-}
-
-function sumBytes(arr: string[]) {
-  return arr.reduce((s, d) => s + approxBytes(d), 0);
 }
 
 /** バッチが使った画像を取り出す（旧バッチはthumbsからフォールバック） */
@@ -328,21 +360,18 @@ export default function Home() {
     setJobs((prev) => [...prev, { id: jobId, startedAt: jobStart, label: jobLabel }]);
 
     try {
-      // 履歴・送信用に既定品質で圧縮（原本はプールに残す）
+      // 履歴スナップショット（再編集時のフォールバック。プールに原本が残っていれば原本を優先）
       const inComp = await compressList(snap.inputs);
       const refComp = await compressList(snap.refs);
+      const refOriginals = snap.refs.map((x) => x.dataUrl);
 
-      // 入力画像群を受け取り1リクエスト送信する（ボディ上限を超えるなら再圧縮）
-      const sendRequest = async (inputItems: ImageItem[]): Promise<GenerateResponse> => {
-        let inP = inputItems.map((it) => inComp[snap.inputs.indexOf(it)]);
-        let refP = refComp;
-        if (sumBytes(inP) + sumBytes(refP) > MAX_UPLOAD_BYTES) {
-          inP = await compressList(inputItems, 1024, 0.72);
-          refP = await compressList(snap.refs, 1024, 0.72);
-        }
-        if (sumBytes(inP) + sumBytes(refP) > MAX_UPLOAD_BYTES) {
+      // 1リクエスト送信。基本は原本のまま、上限超過時のみ必要最小限だけ縮小する。
+      const sendRequest = async (inputDataUrls: string[]): Promise<GenerateResponse> => {
+        const fitted = await fitUnderLimit(inputDataUrls, refOriginals, MAX_UPLOAD_BYTES);
+        const bodyLen = payloadLen(fitted.inputs) + payloadLen(fitted.refs);
+        if (bodyLen > MAX_UPLOAD_BYTES) {
           throw new Error(
-            `添付画像の合計サイズが大きすぎます(約${((sumBytes(inP) + sumBytes(refP)) / 1_000_000).toFixed(1)}MB)。より小さい画像を使ってください。`
+            `画像の合計サイズが大きすぎます(約${(bodyLen / 1_000_000).toFixed(1)}MB)。枚数を減らすか、より小さい画像を使ってください。`
           );
         }
         const res = await fetch("/api/generate", {
@@ -353,8 +382,8 @@ export default function Home() {
             aspectRatio: snap.aspectRatio,
             count: snap.count,
             prompt: snap.prompt,
-            inputImages: inP,
-            referenceImages: refP,
+            inputImages: fitted.inputs,
+            referenceImages: fitted.refs,
           }),
         });
         if (!res.ok) {
@@ -373,7 +402,9 @@ export default function Home() {
       const errors: string[] = [];
 
       if (snap.mode === "perInput") {
-        const settled = await Promise.allSettled(snap.inputs.map((inp) => sendRequest([inp])));
+        const settled = await Promise.allSettled(
+          snap.inputs.map((inp) => sendRequest([inp.dataUrl]))
+        );
         settled.forEach((s, idx) => {
           const srcName = snap.inputs[idx].name;
           if (s.status === "fulfilled") {
@@ -385,7 +416,7 @@ export default function Home() {
           }
         });
       } else {
-        const data = await sendRequest(snap.inputs);
+        const data = await sendRequest(snap.inputs.map((x) => x.dataUrl));
         results = data.results;
         costUsd = data.costUsd;
         errors.push(...data.errors);
