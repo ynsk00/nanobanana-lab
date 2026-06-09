@@ -5,6 +5,7 @@ import JSZip from "jszip";
 import { Button, Panel } from "@/components/ui";
 import { LibraryGrid } from "@/components/LibraryGrid";
 import { ApiKeyModal } from "@/components/ApiKeyModal";
+import { Lightbox } from "@/components/Lightbox";
 import { getApiKey, maskKey } from "@/lib/settings";
 import { MODELS, DEFAULT_MODEL_KEY, getModel } from "@/lib/pricing";
 import type { Batch, GenerateResponse, ImageItem, PromptItem } from "@/lib/types";
@@ -48,6 +49,13 @@ export default function Home() {
   // --- APIキー ---
   const [apiKey, setApiKeyState] = useState("");
   const [keyModalOpen, setKeyModalOpen] = useState(false);
+
+  // --- 拡大表示(ライトボックス) ---
+  const [lightbox, setLightbox] = useState<{
+    id: string;
+    dataUrl: string;
+    mimeType: string;
+  } | null>(null);
 
   // --- クリップボード貼り付け先（クリックで選んだライブラリ） ---
   const [pasteTarget, setPasteTarget] = useState<"inputs" | "references">("inputs");
@@ -430,6 +438,12 @@ export default function Home() {
         onSaved={(k) => setApiKeyState(k)}
       />
 
+      <Lightbox
+        image={lightbox}
+        onClose={() => setLightbox(null)}
+        onUseAsInput={useResultAsInput}
+      />
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
         {/* 左: ライブラリ */}
         <aside className="flex flex-col gap-4">
@@ -644,6 +658,7 @@ export default function Home() {
                 key={batch.id}
                 batch={batch}
                 onUseAsInput={useResultAsInput}
+                onOpenImage={setLightbox}
                 onDownloadZip={() => downloadBatchZip(batch)}
                 onDelete={() => deleteBatch(batch.id)}
               />
@@ -785,11 +800,13 @@ function ImageLibraryPanel({
 function BatchCard({
   batch,
   onUseAsInput,
+  onOpenImage,
   onDownloadZip,
   onDelete,
 }: {
   batch: Batch;
   onUseAsInput: (dataUrl: string, mimeType: string) => void;
+  onOpenImage: (img: { id: string; dataUrl: string; mimeType: string }) => void;
   onDownloadZip: () => void;
   onDelete: () => void;
 }) {
@@ -837,24 +854,34 @@ function BatchCard({
         {batch.results.map((r) => (
           <div key={r.id} className="group relative overflow-hidden rounded-lg border border-zinc-800">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={r.dataUrl} alt="result" className="w-full object-cover" />
-            <div className="absolute inset-x-0 bottom-0 flex translate-y-full gap-1 bg-gradient-to-t from-black/80 to-transparent p-1.5 transition group-hover:translate-y-0">
+            <img
+              src={r.dataUrl}
+              alt="result"
+              className="w-full cursor-zoom-in object-cover"
+              onClick={() => onOpenImage(r)}
+              title="クリックで拡大表示"
+            />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex translate-y-full gap-1 bg-gradient-to-t from-black/80 to-transparent p-1.5 transition group-hover:translate-y-0 group-hover:pointer-events-auto">
               <Button
                 variant="default"
                 className="flex-1 px-2 py-1 text-[11px]"
-                onClick={() => onUseAsInput(r.dataUrl, r.mimeType)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUseAsInput(r.dataUrl, r.mimeType);
+                }}
               >
                 入力に使う
               </Button>
               <Button
                 variant="default"
                 className="px-2 py-1 text-[11px]"
-                onClick={() =>
+                onClick={(e) => {
+                  e.stopPropagation();
                   downloadBlob(
                     dataUrlToBlob(r.dataUrl),
                     `${r.id}.${extFromMime(r.mimeType)}`
-                  )
-                }
+                  );
+                }}
               >
                 ⬇
               </Button>
