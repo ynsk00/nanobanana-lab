@@ -68,6 +68,9 @@ export interface Batch {
   durationMs: number;
   /** エラー（部分的失敗を含む） */
   errors: string[];
+  /** 実際にGeminiへ添付した入力/参照の枚数（検証用） */
+  sentInputCount?: number;
+  sentReferenceCount?: number;
 }
 
 /** /api/generate のレスポンス */
@@ -76,4 +79,7 @@ export interface GenerateResponse {
   costUsd: number;
   durationMs: number;
   errors: string[];
+  /** サーバーが実際にGeminiへ添付した枚数（検証用） */
+  sentInputCount: number;
+  sentReferenceCount: number;
 }

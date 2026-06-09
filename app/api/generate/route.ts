@@ -75,11 +75,15 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  let sentInputCount = 0;
+  let sentReferenceCount = 0;
+
   inputImages.forEach((dataUrl, i) => {
     const part = dataUrlToPart(dataUrl);
     if (part) {
       parts.push({ text: `入力画像 @in${i + 1}:` });
       parts.push(part);
+      sentInputCount++;
     }
   });
 
@@ -88,8 +92,13 @@ export async function POST(req: NextRequest) {
     if (part) {
       parts.push({ text: `参照画像 @ref${i + 1}（スタイル/要素の参考。被写体ではなく参考として扱う）:` });
       parts.push(part);
+      sentReferenceCount++;
     }
   });
+
+  // 受け取ったのに添付できなかった画像があれば警告（data URL不正など）
+  const droppedInputs = inputImages.length - sentInputCount;
+  const droppedRefs = referenceImages.length - sentReferenceCount;
 
   if (prompt?.trim()) {
     parts.push({ text: prompt });
@@ -156,6 +165,16 @@ export async function POST(req: NextRequest) {
 
   const costUsd = results.length * model.pricePerImage;
 
-  const payload: GenerateResponse = { results, costUsd, durationMs, errors };
+  if (droppedInputs > 0) errors.push(`入力画像 ${droppedInputs} 枚を添付できませんでした(形式エラー)`);
+  if (droppedRefs > 0) errors.push(`参照画像 ${droppedRefs} 枚を添付できませんでした(形式エラー)`);
+
+  const payload: GenerateResponse = {
+    results,
+    costUsd,
+    durationMs,
+    errors,
+    sentInputCount,
+    sentReferenceCount,
+  };
   return NextResponse.json(payload);
 }

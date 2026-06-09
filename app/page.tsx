@@ -19,7 +19,6 @@ import type {
 } from "@/lib/types";
 import * as db from "@/lib/db";
 import {
-  compressForUpload,
   dataUrlToBlob,
   downloadBlob,
   extFromMime,
@@ -27,46 +26,7 @@ import {
   genId,
   mimeFromDataUrl,
 } from "@/lib/image";
-
-// Vercelサーバーレス関数のリクエストボディ上限(約4.5MB)に対する安全マージン。
-// data URL は base64 文字列としてそのまま送られるため、文字数(≈バイト)で見積もる。
-const MAX_UPLOAD_BYTES = 4_200_000;
-
-// 上限超過時の段階的縮小（高品質→低品質。原本に近い順に試す）
-const UPLOAD_STEPS: [number, number][] = [
-  [3072, 0.95],
-  [2560, 0.92],
-  [2048, 0.9],
-  [1600, 0.86],
-  [1280, 0.82],
-];
-
-/** 送信される文字数(≈バイト)の合計 */
-function payloadLen(arr: string[]) {
-  return arr.reduce((s, d) => s + d.length, 0);
-}
-
-/**
- * まず原本のまま送れるか判定し、上限を超える場合のみ必要最小限だけ縮小する。
- * 高品質側から順に試し、最初に上限内に収まった版を返す。
- */
-async function fitUnderLimit(
-  inputs: string[],
-  refs: string[],
-  limit: number
-): Promise<{ inputs: string[]; refs: string[]; downscaled: boolean }> {
-  if (payloadLen(inputs) + payloadLen(refs) <= limit) {
-    return { inputs, refs, downscaled: false };
-  }
-  let best = { inputs, refs, downscaled: true };
-  for (const [maxSize, q] of UPLOAD_STEPS) {
-    const ci = await Promise.all(inputs.map((d) => compressForUpload(d, maxSize, q)));
-    const cr = await Promise.all(refs.map((d) => compressForUpload(d, maxSize, q)));
-    best = { inputs: ci, refs: cr, downscaled: true };
-    if (payloadLen(ci) + payloadLen(cr) <= limit) return best;
-  }
-  return best; // 最小版でも超える場合はそのまま返し、呼び出し側で判定
-}
+import { compressList, requestGeneration } from "@/lib/generation";
 
 interface SelEntry {
   id: string;
@@ -74,11 +34,6 @@ interface SelEntry {
 }
 
 type BatchMode = "combined" | "perInput";
-
-/** 履歴スナップショット用に控えめに圧縮した data URL 配列を作る（送信用ではない） */
-function compressList(items: ImageItem[], maxSize?: number, quality?: number) {
-  return Promise.all(items.map((x) => compressForUpload(x.dataUrl, maxSize, quality)));
-}
 
 /** バッチが使った画像を取り出す（旧バッチはthumbsからフォールバック） */
 function getUsedImages(batch: Batch): UsedImage[] {
@@ -364,51 +319,31 @@ export default function Home() {
       const inComp = await compressList(snap.inputs);
       const refComp = await compressList(snap.refs);
       const refOriginals = snap.refs.map((x) => x.dataUrl);
-
-      // 1リクエスト送信。基本は原本のまま、上限超過時のみ必要最小限だけ縮小する。
-      const sendRequest = async (inputDataUrls: string[]): Promise<GenerateResponse> => {
-        const fitted = await fitUnderLimit(inputDataUrls, refOriginals, MAX_UPLOAD_BYTES);
-        const bodyLen = payloadLen(fitted.inputs) + payloadLen(fitted.refs);
-        if (bodyLen > MAX_UPLOAD_BYTES) {
-          throw new Error(
-            `画像の合計サイズが大きすぎます(約${(bodyLen / 1_000_000).toFixed(1)}MB)。枚数を減らすか、より小さい画像を使ってください。`
-          );
-        }
-        const res = await fetch("/api/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey },
-          body: JSON.stringify({
-            modelKey: snap.modelKey,
-            aspectRatio: snap.aspectRatio,
-            count: snap.count,
-            prompt: snap.prompt,
-            inputImages: fitted.inputs,
-            referenceImages: fitted.refs,
-          }),
-        });
-        if (!res.ok) {
-          if (res.status === 413) {
-            throw new Error("送信データが大きすぎます(413)。より小さい画像を使ってください。");
-          }
-          const j = await res.json().catch(() => ({}));
-          throw new Error(j.error || `生成に失敗しました (${res.status})`);
-        }
-        return (await res.json()) as GenerateResponse;
+      const params = {
+        apiKey,
+        modelKey: snap.modelKey,
+        aspectRatio: snap.aspectRatio,
+        count: snap.count,
+        prompt: snap.prompt,
       };
 
       // モードに応じて1回 or 入力ごとに並列実行
       let results: GenerateResponse["results"] = [];
       let costUsd = 0;
+      let sentInputCount = 0;
+      let sentReferenceCount = 0;
       const errors: string[] = [];
 
       if (snap.mode === "perInput") {
         const settled = await Promise.allSettled(
-          snap.inputs.map((inp) => sendRequest([inp.dataUrl]))
+          snap.inputs.map((inp) => requestGeneration(params, [inp.dataUrl], refOriginals))
         );
         settled.forEach((s, idx) => {
           const srcName = snap.inputs[idx].name;
           if (s.status === "fulfilled") {
             costUsd += s.value.costUsd;
+            sentInputCount += s.value.sentInputCount ?? 0;
+            sentReferenceCount = Math.max(sentReferenceCount, s.value.sentReferenceCount ?? 0);
             errors.push(...s.value.errors.map((e) => `${srcName}: ${e}`));
             results.push(...s.value.results.map((r) => ({ ...r, sourceName: srcName })));
           } else {
@@ -416,9 +351,11 @@ export default function Home() {
           }
         });
       } else {
-        const data = await sendRequest(snap.inputs.map((x) => x.dataUrl));
+        const data = await requestGeneration(params, snap.inputs.map((x) => x.dataUrl), refOriginals);
         results = data.results;
         costUsd = data.costUsd;
+        sentInputCount = data.sentInputCount ?? 0;
+        sentReferenceCount = data.sentReferenceCount ?? 0;
         errors.push(...data.errors);
       }
 
@@ -453,6 +390,8 @@ export default function Home() {
         costUsd,
         durationMs: Date.now() - jobStart,
         errors,
+        sentInputCount,
+        sentReferenceCount,
       };
       await db.put("batches", batch);
       setBatches((p) => [batch, ...p]);
@@ -1039,6 +978,17 @@ function BatchCard({
         </span>
         <span className="text-amber-400">${batch.costUsd.toFixed(3)}</span>
         <span className="text-zinc-400">⏱ {(batch.durationMs / 1000).toFixed(1)}s</span>
+        {(batch.sentInputCount !== undefined || batch.sentReferenceCount !== undefined) && (
+          <span
+            className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-300"
+            title="この生成でGeminiへ実際に添付された枚数"
+          >
+            送信 入力<b className="text-amber-300">{batch.sentInputCount ?? 0}</b> / 参照
+            <b className={batch.sentReferenceCount ? "text-sky-300" : "text-zinc-500"}>
+              {batch.sentReferenceCount ?? 0}
+            </b>
+          </span>
+        )}
         <span className="text-zinc-600">{new Date(batch.createdAt).toLocaleString("ja-JP")}</span>
         <div className="ml-auto flex items-center gap-1">
           <Button
