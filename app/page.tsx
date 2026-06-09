@@ -10,6 +10,8 @@ import { MODELS, DEFAULT_MODEL_KEY, getModel } from "@/lib/pricing";
 import type { Batch, GenerateResponse, ImageItem, PromptItem } from "@/lib/types";
 import * as db from "@/lib/db";
 import {
+  approxBytes,
+  compressForUpload,
   dataUrlToBlob,
   downloadBlob,
   extFromMime,
@@ -17,6 +19,9 @@ import {
   genId,
   makeThumbnail,
 } from "@/lib/image";
+
+// Vercelサーバーレス関数のリクエストボディ上限(約4.5MB)に対する安全マージン
+const MAX_UPLOAD_BYTES = 4_000_000;
 
 export default function Home() {
   // --- ライブラリ ---
@@ -241,6 +246,35 @@ export default function Home() {
     }
     setGenerating(true);
     try {
+      // 送信前に画像を縮小・圧縮(ボディ上限対策)。原本はライブラリに残す。
+      const [inputImages, referenceImages] = await Promise.all([
+        Promise.all(selectedInputs.map((x) => compressForUpload(x.dataUrl))),
+        Promise.all(selectedRefs.map((x) => compressForUpload(x.dataUrl))),
+      ]);
+
+      // それでも上限を超える場合は、より小さく再圧縮を試みる
+      let payloadIn = inputImages;
+      let payloadRef = referenceImages;
+      let totalBytes = [...payloadIn, ...payloadRef].reduce(
+        (s, d) => s + approxBytes(d),
+        0
+      );
+      if (totalBytes > MAX_UPLOAD_BYTES) {
+        [payloadIn, payloadRef] = await Promise.all([
+          Promise.all(selectedInputs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72))),
+          Promise.all(selectedRefs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72))),
+        ]);
+        totalBytes = [...payloadIn, ...payloadRef].reduce(
+          (s, d) => s + approxBytes(d),
+          0
+        );
+      }
+      if (totalBytes > MAX_UPLOAD_BYTES) {
+        throw new Error(
+          `添付画像の合計サイズが大きすぎます(約${(totalBytes / 1_000_000).toFixed(1)}MB)。枚数を減らすか、より小さい画像を使ってください。`
+        );
+      }
+
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: {
@@ -252,11 +286,16 @@ export default function Home() {
           aspectRatio,
           count,
           prompt: promptText,
-          inputImages: selectedInputs.map((x) => x.dataUrl),
-          referenceImages: selectedRefs.map((x) => x.dataUrl),
+          inputImages: payloadIn,
+          referenceImages: payloadRef,
         }),
       });
       if (!res.ok) {
+        if (res.status === 413) {
+          throw new Error(
+            "送信データが大きすぎます(413)。入力画像の枚数を減らすか、小さい画像を使ってください。"
+          );
+        }
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `生成に失敗しました (${res.status})`);
       }
