@@ -12,8 +12,10 @@ import { MODELS, DEFAULT_MODEL_KEY, getModel } from "@/lib/pricing";
 import type {
   Batch,
   GenerateResponse,
+  ImageAsset,
   ImageItem,
   PromptItem,
+  ResultImage,
   Role,
   UsedImage,
 } from "@/lib/types";
@@ -24,6 +26,7 @@ import {
   extFromMime,
   fileToDataUrl,
   genId,
+  makeThumbnail,
   mimeFromDataUrl,
 } from "@/lib/image";
 import { compressList, requestGeneration } from "@/lib/generation";
@@ -34,6 +37,21 @@ interface SelEntry {
 }
 
 type BatchMode = "combined" | "perInput";
+
+/** 結果のフル解像度画像を取得（assetsから都度ロード。旧バッチはdataUrl直持ち） */
+async function getFullImage(r: ResultImage): Promise<string> {
+  if (r.dataUrl) return r.dataUrl;
+  if (r.assetId) {
+    const a = await db.get<ImageAsset>("assets", r.assetId);
+    if (a?.dataUrl) return a.dataUrl;
+  }
+  return r.thumbUrl || "";
+}
+
+/** 一覧表示用の画像（サムネ優先） */
+function displayUrl(r: ResultImage): string {
+  return r.thumbUrl || r.dataUrl || "";
+}
 
 /** バッチが使った画像を取り出す（旧バッチはthumbsからフォールバック） */
 function getUsedImages(batch: Batch): UsedImage[] {
@@ -79,6 +97,10 @@ export default function Home() {
 
   // --- 基準（良かった結果）---
   const [baselineId, setBaselineId] = useState<string | null>(null);
+
+  // --- 表示件数の窓 / ストレージ使用量 ---
+  const [visibleCount, setVisibleCount] = useState(8);
+  const [usage, setUsage] = useState<{ usage: number; quota: number } | null>(null);
 
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -136,6 +158,15 @@ export default function Home() {
     const timer = setInterval(() => setTick((n) => n + 1), 200);
     return () => clearInterval(timer);
   }, [jobs.length]);
+
+  // ストレージ使用量の推定（バッチ数が変わるたび更新）
+  useEffect(() => {
+    if (typeof navigator !== "undefined" && navigator.storage?.estimate) {
+      navigator.storage.estimate().then((e) =>
+        setUsage({ usage: e.usage || 0, quota: e.quota || 0 })
+      );
+    }
+  }, [batches.length]);
 
   // --- プール操作 ---
   const addImagesToPool = useCallback(async (files: FileList | File[]) => {
@@ -369,6 +400,26 @@ export default function Home() {
         errors.push(...data.errors);
       }
 
+      // 結果のフル画像はassetsストアへ退避し、バッチ(=state)にはサムネ＋参照だけ持たせる
+      const storedResults: ResultImage[] = [];
+      for (const r of results) {
+        const full = r.dataUrl || "";
+        if (!full) {
+          storedResults.push(r);
+          continue;
+        }
+        await db.put<ImageAsset>("assets", { id: r.id, dataUrl: full });
+        const thumbUrl = await makeThumbnail(full, 400);
+        storedResults.push({
+          id: r.id,
+          thumbUrl,
+          assetId: r.id,
+          mimeType: r.mimeType,
+          note: r.note,
+          sourceName: r.sourceName,
+        });
+      }
+
       const usedImages: UsedImage[] = [
         ...snap.inputs.map((x, i) => ({
           id: x.id,
@@ -396,7 +447,7 @@ export default function Home() {
         requestedCount: jobTotal,
         prompt: snap.prompt,
         usedImages,
-        results,
+        results: storedResults,
         costUsd,
         durationMs: Date.now() - jobStart,
         errors,
@@ -416,13 +467,43 @@ export default function Home() {
   }, [activeKey, geminiKey, openaiKey, promptText, batchMode, selectedInputs, selectedRefs, modelKey, aspectRatio, count, model]);
 
   // --- バッチ操作 ---
-  const deleteBatch = useCallback(async (id: string) => {
-    await db.del("batches", id);
-    setBatches((p) => p.filter((x) => x.id !== id));
-    setBaselineId((cur) => (cur === id ? null : cur));
-    if (typeof window !== "undefined" && localStorage.getItem("nbl_baseline_id") === id) {
+  // バッチ本体＋フル画像(assets)をストレージから削除
+  const deleteBatchData = useCallback(async (batch: Batch) => {
+    await db.del("batches", batch.id);
+    for (const r of batch.results) {
+      if (r.assetId) await db.del("assets", r.assetId);
+    }
+    if (typeof window !== "undefined" && localStorage.getItem("nbl_baseline_id") === batch.id) {
       localStorage.removeItem("nbl_baseline_id");
     }
+  }, []);
+
+  const deleteBatch = useCallback(
+    async (batch: Batch) => {
+      await deleteBatchData(batch);
+      setBatches((p) => p.filter((x) => x.id !== batch.id));
+      setBaselineId((cur) => (cur === batch.id ? null : cur));
+    },
+    [deleteBatchData]
+  );
+
+  // 結果画像の操作（フル画像はassetsから都度ロード）
+  const openResult = useCallback(async (r: ResultImage) => {
+    const full = await getFullImage(r);
+    setLightbox({ id: r.id, dataUrl: full, mimeType: r.mimeType, assignable: true });
+  }, []);
+
+  const useResult = useCallback(
+    async (r: ResultImage, role: Role) => {
+      const full = await getFullImage(r);
+      if (full) addResultToPool(full, r.mimeType, role);
+    },
+    [addResultToPool]
+  );
+
+  const downloadResult = useCallback(async (r: ResultImage) => {
+    const full = await getFullImage(r);
+    if (full) downloadBlob(dataUrlToBlob(full), `${r.id}.${extFromMime(r.mimeType)}`);
   }, []);
 
   // 基準（良かった結果）に設定/解除
@@ -482,12 +563,15 @@ export default function Home() {
     const zip = new JSZip();
     const stamp = new Date(batch.createdAt).toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const folder = zip.folder(`batch_${stamp}`)!;
-    batch.results.forEach((r, i) => {
+    for (let i = 0; i < batch.results.length; i++) {
+      const r = batch.results[i];
+      const full = await getFullImage(r);
+      if (!full) continue;
       folder.file(
         `image_${String(i + 1).padStart(2, "0")}.${extFromMime(r.mimeType)}`,
-        dataUrlToBlob(r.dataUrl)
+        dataUrlToBlob(full)
       );
-    });
+    }
     folder.file(
       "metadata.json",
       JSON.stringify(
@@ -511,6 +595,22 @@ export default function Home() {
     const blob = await zip.generateAsync({ type: "blob" });
     downloadBlob(blob, `nanobanana_batch_${stamp}.zip`);
   }, []);
+
+  // 最新 keep 件を残して古いバッチを削除
+  const pruneOld = useCallback(
+    async (keep: number) => {
+      const sorted = [...batches].sort((a, b) => b.createdAt - a.createdAt);
+      const toDelete = sorted.slice(keep);
+      if (toDelete.length === 0) return;
+      if (!window.confirm(`古い ${toDelete.length} 件のバッチを削除します。よろしいですか？（最新 ${keep} 件は残ります）`))
+        return;
+      for (const b of toDelete) await deleteBatchData(b);
+      const remaining = sorted.slice(0, keep);
+      setBatches(remaining);
+      setBaselineId((cur) => (cur && remaining.some((b) => b.id === cur) ? cur : null));
+    },
+    [batches, deleteBatchData]
+  );
 
   const totalCost = useMemo(() => batches.reduce((s, b) => s + b.costUsd, 0), [batches]);
   const baselineBatch = useMemo(
@@ -693,15 +793,12 @@ export default function Home() {
                     {baselineBatch.results[0] && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={baselineBatch.results[0].dataUrl}
+                        src={displayUrl(baselineBatch.results[0])}
                         alt="基準"
+                        loading="lazy"
+                        decoding="async"
                         className="h-16 w-16 shrink-0 cursor-zoom-in rounded border border-amber-400/40 object-cover"
-                        onClick={() =>
-                          setLightbox({
-                            ...baselineBatch.results[0],
-                            assignable: true,
-                          })
-                        }
+                        onClick={() => openResult(baselineBatch.results[0])}
                         title="クリックで拡大"
                       />
                     )}
@@ -892,24 +989,64 @@ export default function Home() {
 
           {/* 結果一覧 */}
           <div className="flex flex-col gap-4">
+            {batches.length > 0 && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-zinc-800 bg-zinc-900/30 px-3 py-2 text-xs text-zinc-400">
+                <span>
+                  履歴 <b className="text-zinc-200">{batches.length}</b> 件
+                </span>
+                {usage && (
+                  <span title="ブラウザの推定ストレージ使用量">
+                    使用量 <b className="text-zinc-200">{(usage.usage / 1_000_000).toFixed(0)}MB</b>
+                    {usage.quota ? (
+                      <span className="text-zinc-600">
+                        {" "}
+                        / {(usage.quota / 1_000_000_000).toFixed(1)}GB
+                      </span>
+                    ) : null}
+                  </span>
+                )}
+                <span className="ml-auto flex items-center gap-1">
+                  <Button variant="ghost" className="px-2 py-1" onClick={() => pruneOld(20)} disabled={batches.length <= 20}>
+                    最新20件だけ残す
+                  </Button>
+                  <Button variant="ghost" className="px-2 py-1" onClick={() => pruneOld(50)} disabled={batches.length <= 50}>
+                    最新50件だけ残す
+                  </Button>
+                </span>
+              </div>
+            )}
+
             {batches.length === 0 && (
               <div className="rounded-xl border border-dashed border-zinc-800 py-16 text-center text-sm text-zinc-600">
                 まだ生成結果はありません。上のフォームから生成してください。
               </div>
             )}
-            {batches.map((batch) => (
+
+            {batches.slice(0, visibleCount).map((batch) => (
               <BatchCard
                 key={batch.id}
                 batch={batch}
                 isBaseline={batch.id === baselineId}
                 onToggleBaseline={() => toggleBaseline(batch.id)}
-                onAddToPool={addResultToPool}
+                onOpenResult={openResult}
+                onUseResult={useResult}
+                onDownloadResult={downloadResult}
                 onOpenImage={setLightbox}
                 onReEdit={() => reEdit(batch)}
                 onDownloadZip={() => downloadBatchZip(batch)}
-                onDelete={() => deleteBatch(batch.id)}
+                onDelete={() => deleteBatch(batch)}
               />
             ))}
+
+            {visibleCount < batches.length && (
+              <Button
+                variant="default"
+                className="self-center"
+                onClick={() => setVisibleCount((v) => v + 8)}
+              >
+                さらに表示（残り {batches.length - visibleCount} 件）
+              </Button>
+            )}
           </div>
         </main>
       </div>
@@ -956,7 +1093,9 @@ function BatchCard({
   batch,
   isBaseline,
   onToggleBaseline,
-  onAddToPool,
+  onOpenResult,
+  onUseResult,
+  onDownloadResult,
   onOpenImage,
   onReEdit,
   onDownloadZip,
@@ -965,7 +1104,9 @@ function BatchCard({
   batch: Batch;
   isBaseline: boolean;
   onToggleBaseline: () => void;
-  onAddToPool: (dataUrl: string, mimeType: string, role: Role) => void;
+  onOpenResult: (r: ResultImage) => void;
+  onUseResult: (r: ResultImage, role: Role) => void;
+  onDownloadResult: (r: ResultImage) => void;
   onOpenImage: (img: LightboxImage) => void;
   onReEdit: () => void;
   onDownloadZip: () => void;
@@ -1067,10 +1208,12 @@ function BatchCard({
           <div key={r.id} className="group relative overflow-hidden rounded-lg border border-zinc-800">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={r.dataUrl}
+              src={displayUrl(r)}
               alt="result"
+              loading="lazy"
+              decoding="async"
               className="w-full cursor-zoom-in object-cover"
-              onClick={() => onOpenImage({ ...r, assignable: true })}
+              onClick={() => onOpenResult(r)}
               title="クリックで拡大表示"
             />
             {r.sourceName && (
@@ -1084,7 +1227,7 @@ function BatchCard({
                 className="flex-1 px-1.5 py-1 text-[10px]"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onAddToPool(r.dataUrl, r.mimeType, "input");
+                  onUseResult(r, "input");
                 }}
               >
                 入力に
@@ -1094,7 +1237,7 @@ function BatchCard({
                 className="flex-1 px-1.5 py-1 text-[10px]"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onAddToPool(r.dataUrl, r.mimeType, "reference");
+                  onUseResult(r, "reference");
                 }}
               >
                 参照に
@@ -1104,7 +1247,7 @@ function BatchCard({
                 className="px-1.5 py-1 text-[10px]"
                 onClick={(e) => {
                   e.stopPropagation();
-                  downloadBlob(dataUrlToBlob(r.dataUrl), `${r.id}.${extFromMime(r.mimeType)}`);
+                  onDownloadResult(r);
                 }}
               >
                 ⬇
@@ -1167,6 +1310,8 @@ function HistoryThumbs({
         <img
           key={u.id + i}
           src={u.dataUrl}
+          loading="lazy"
+          decoding="async"
           alt={`${prefix}${i + 1}`}
           title={`@${prefix}${i + 1} をクリックで拡大`}
           onClick={() =>

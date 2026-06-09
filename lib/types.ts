@@ -37,12 +37,23 @@ export interface PromptItem {
 /** 生成結果1枚 */
 export interface ResultImage {
   id: string;
-  dataUrl: string;
+  /** 一覧表示用サムネ（軽量）。新しいバッチはこれを持つ */
+  thumbUrl?: string;
+  /** フル解像度画像の保管先(assetsストアのキー)。本体はstateに載せず都度ロード */
+  assetId?: string;
+  /** 旧バッチ互換: フル画像を直接保持していた場合 */
+  dataUrl?: string;
   mimeType: string;
   /** モデルが返したテキスト（ある場合） */
   note?: string;
   /** 「入力ごとに生成」モードで、この結果の元になった入力画像名 */
   sourceName?: string;
+}
+
+/** assetsストアの値（フル解像度画像） */
+export interface ImageAsset {
+  id: string;
+  dataUrl: string;
 }
 
 /** 1回の「生成」= 1バッチ */

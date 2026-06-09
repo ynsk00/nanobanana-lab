@@ -2,14 +2,16 @@
 // IndexedDB に保存する。ストアごとに keyPath="id" のオブジェクトを格納。
 
 const DB_NAME = "nanobanana-lab";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 // "pool" = 統合画像ライブラリ。inputs/references は旧バージョンからの移行用に残す。
+// "assets" = 生成結果のフル解像度画像（一覧にはサムネだけ載せ、本体はここから都度ロード）。
 export const STORES = [
   "pool",
   "inputs",
   "references",
   "prompts",
   "batches",
+  "assets",
 ] as const;
 export type StoreName = (typeof STORES)[number];
 
@@ -39,6 +41,16 @@ export async function getAll<T>(store: StoreName): Promise<T[]> {
     const tx = db.transaction(store, "readonly");
     const req = tx.objectStore(store).getAll();
     req.onsuccess = () => resolve(req.result as T[]);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function get<T>(store: StoreName, key: string): Promise<T | undefined> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).get(key);
+    req.onsuccess = () => resolve(req.result as T | undefined);
     req.onerror = () => reject(req.error);
   });
 }
