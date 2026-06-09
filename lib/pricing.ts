@@ -18,6 +18,8 @@ export interface ModelDef {
   description: string;
   /** OpenAI用: 品質 (low/medium/high/auto) */
   quality?: string;
+  /** OpenAI用: 出力解像度ティア */
+  imageSizeTier?: "1k" | "2k";
 }
 
 const NANO_BANANA_2_ID =
@@ -57,23 +59,36 @@ export const MODELS: Record<string, ModelDef> = {
   },
   "gpt-image-1": {
     key: "gpt-image-1",
-    label: "GPT Image (標準)",
+    label: "GPT Image 1",
     id: "gpt-image-1",
     provider: "openai",
     quality: "medium",
+    imageSizeTier: "1k",
     pricePerImage: 0.042,
     aspectRatios: ["1:1", "3:2", "2:3"],
     description: "OpenAI gpt-image-1。標準品質でコスト控えめ。",
   },
-  "gpt-image-1-high": {
-    key: "gpt-image-1-high",
-    label: "GPT Image (高品質)",
-    id: "gpt-image-1",
+  "gpt-image-2": {
+    key: "gpt-image-2",
+    label: "GPT Image 2",
+    id: "gpt-image-2",
     provider: "openai",
     quality: "high",
-    pricePerImage: 0.167,
+    imageSizeTier: "1k",
+    pricePerImage: 0.19,
     aspectRatios: ["1:1", "3:2", "2:3"],
-    description: "OpenAI gpt-image-1。高品質・高コスト。",
+    description: "OpenAI gpt-image-2。最新・高品質。テキスト描画や編集に強い。",
+  },
+  "gpt-image-2-2k": {
+    key: "gpt-image-2-2k",
+    label: "GPT Image 2 (2K)",
+    id: "gpt-image-2",
+    provider: "openai",
+    quality: "high",
+    imageSizeTier: "2k",
+    pricePerImage: 0.4,
+    aspectRatios: ["1:1", "3:2", "2:3"],
+    description: "OpenAI gpt-image-2 をネイティブ2K解像度で出力。高コスト。",
   },
 };
 
@@ -83,8 +98,13 @@ export function getModel(key: string): ModelDef {
   return MODELS[key] ?? MODELS[DEFAULT_MODEL_KEY];
 }
 
-/** OpenAI gpt-image-1 のサイズへアスペクト比をマッピング */
-export function openaiSizeForAspect(aspect: string): string {
+/** OpenAI 画像モデルのサイズへアスペクト比をマッピング（解像度ティア対応） */
+export function openaiSizeForAspect(aspect: string, tier: "1k" | "2k" = "1k"): string {
+  if (tier === "2k") {
+    if (aspect === "3:2") return "2048x1360";
+    if (aspect === "2:3") return "1360x2048";
+    return "2048x2048";
+  }
   if (aspect === "3:2") return "1536x1024";
   if (aspect === "2:3") return "1024x1536";
   return "1024x1024";

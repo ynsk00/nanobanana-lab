@@ -186,7 +186,7 @@ async function handleGoogle(model: ModelDef, apiKey: string, args: HandlerArgs) 
 // ---------- OpenAI (GPT Image) ----------
 async function handleOpenAI(model: ModelDef, apiKey: string, args: HandlerArgs) {
   const { aspectRatio, count, prompt, inputImages, referenceImages } = args;
-  const size = openaiSizeForAspect(aspectRatio);
+  const size = openaiSizeForAspect(aspectRatio, model.imageSizeTier);
   const n = Math.min(Math.max(1, count), 10);
   const quality = model.quality || "auto";
   const finalPrompt = prompt?.trim() || "Create an image based on the provided reference images.";
@@ -202,7 +202,7 @@ async function handleOpenAI(model: ModelDef, apiKey: string, args: HandlerArgs) 
     if (allImages.length > 0) {
       // 画像あり → 編集エンドポイント (multipart)
       const fd = new FormData();
-      fd.append("model", "gpt-image-1");
+      fd.append("model", model.id);
       fd.append("prompt", finalPrompt);
       fd.append("n", String(n));
       fd.append("size", size);
@@ -234,7 +234,7 @@ async function handleOpenAI(model: ModelDef, apiKey: string, args: HandlerArgs) 
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ model: "gpt-image-1", prompt: finalPrompt, n, size, quality }),
+        body: JSON.stringify({ model: model.id, prompt: finalPrompt, n, size, quality }),
       });
     }
   } catch (e) {
