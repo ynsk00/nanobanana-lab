@@ -50,7 +50,8 @@ export async function fitUnderLimit(
 }
 
 export interface GenerateParams {
-  apiKey: string;
+  geminiKey?: string;
+  openaiKey?: string;
   modelKey: string;
   aspectRatio: string;
   count: number;
@@ -74,9 +75,13 @@ export async function requestGeneration(
       `画像の合計サイズが大きすぎます(約${(bodyLen / 1_000_000).toFixed(1)}MB)。枚数を減らすか、より小さい画像を使ってください。`
     );
   }
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (params.geminiKey) headers["x-gemini-api-key"] = params.geminiKey;
+  if (params.openaiKey) headers["x-openai-api-key"] = params.openaiKey;
+
   const res = await fetch("/api/generate", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-gemini-api-key": params.apiKey },
+    headers,
     body: JSON.stringify({
       modelKey: params.modelKey,
       aspectRatio: params.aspectRatio,

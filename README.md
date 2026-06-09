@@ -22,7 +22,10 @@ npm run dev
 
 ### APIキー（サイト上で設定）
 
-初回アクセス時に設定モーダルが開きます。[Google AI Studio](https://aistudio.google.com/apikey) で取得したキーを入力し「保存して有効化」を押すだけです（右上の **⚙ APIキー** からいつでも変更可）。
+初回アクセス時に設定モーダルが開きます。使うモデルに応じてキーを入力し「保存して有効化」を押すだけです（右上の **⚙ APIキー** からいつでも変更可）。
+
+- **Nano Banana**（Gemini）→ [Google AI Studio](https://aistudio.google.com/apikey) のキー
+- **GPT Image**（OpenAI gpt-image-1）→ [OpenAI Platform](https://platform.openai.com/api-keys) のキー
 
 - キーは**ブラウザのlocalStorageにのみ保存**され、サーバーには保存されません。
 - 生成時にリクエストヘッダ `x-gemini-api-key` で送信され、サーバーのAPIルートからGoogleへ中継されます。

@@ -1,17 +1,32 @@
 // APIキーはユーザーのブラウザ(localStorage)にのみ保存する。
 // サーバーには保存せず、生成リクエスト時にヘッダで都度送信する。
 
-const KEY = "nbl_gemini_api_key";
+export type KeyProvider = "gemini" | "openai";
 
-export function getApiKey(): string {
+const STORAGE_KEYS: Record<KeyProvider, string> = {
+  gemini: "nbl_gemini_api_key",
+  openai: "nbl_openai_api_key",
+};
+
+export const PROVIDER_LABELS: Record<KeyProvider, string> = {
+  gemini: "Google Gemini",
+  openai: "OpenAI",
+};
+
+export const PROVIDER_DOCS: Record<KeyProvider, string> = {
+  gemini: "https://aistudio.google.com/apikey",
+  openai: "https://platform.openai.com/api-keys",
+};
+
+export function getApiKey(provider: KeyProvider): string {
   if (typeof window === "undefined") return "";
-  return localStorage.getItem(KEY) || "";
+  return localStorage.getItem(STORAGE_KEYS[provider]) || "";
 }
 
-export function setApiKey(value: string): void {
+export function setApiKey(provider: KeyProvider, value: string): void {
   if (typeof window === "undefined") return;
-  if (value) localStorage.setItem(KEY, value);
-  else localStorage.removeItem(KEY);
+  if (value) localStorage.setItem(STORAGE_KEYS[provider], value);
+  else localStorage.removeItem(STORAGE_KEYS[provider]);
 }
 
 /** 表示用にマスクする (先頭4 + **** + 末尾4) */

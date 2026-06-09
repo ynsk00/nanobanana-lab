@@ -5,9 +5,11 @@ export const runtime = "nodejs";
 // APIキーの有効性を、課金の発生しない models 一覧エンドポイントで確認する。
 export async function POST(req: NextRequest) {
   let key = "";
+  let provider = "gemini";
   try {
     const body = await req.json();
     key = (body.apiKey || "").trim();
+    provider = body.provider || "gemini";
   } catch {
     /* noop */
   }
@@ -15,10 +17,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ valid: false, error: "キーが空です。" }, { status: 400 });
   }
   try {
-    const res = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
-      { headers: { "x-goog-api-key": key } }
-    );
+    const res =
+      provider === "openai"
+        ? await fetch("https://api.openai.com/v1/models", {
+            headers: { Authorization: `Bearer ${key}` },
+          })
+        : await fetch(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+            { headers: { "x-goog-api-key": key } }
+          );
+
     if (res.ok) {
       return NextResponse.json({ valid: true });
     }

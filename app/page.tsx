@@ -69,8 +69,9 @@ export default function Home() {
   const [, setTick] = useState(0); // 実行中の経過時間表示を更新するための再描画トリガ
   const [error, setError] = useState<string | null>(null);
 
-  // --- APIキー ---
-  const [apiKey, setApiKeyState] = useState("");
+  // --- APIキー（プロバイダ別） ---
+  const [geminiKey, setGeminiKey] = useState("");
+  const [openaiKey, setOpenaiKey] = useState("");
   const [keyModalOpen, setKeyModalOpen] = useState(false);
 
   // --- 拡大表示 ---
@@ -82,6 +83,8 @@ export default function Home() {
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const model = getModel(modelKey);
+  // 選択中モデルのプロバイダに対応するキー
+  const activeKey = model.provider === "openai" ? openaiKey : geminiKey;
 
   // 初回ロード（旧 inputs/references → pool へ移行）
   useEffect(() => {
@@ -113,9 +116,11 @@ export default function Home() {
         setBaselineId(savedBaseline);
       }
     })();
-    const k = getApiKey();
-    setApiKeyState(k);
-    if (!k) setKeyModalOpen(true);
+    const gk = getApiKey("gemini");
+    const ok = getApiKey("openai");
+    setGeminiKey(gk);
+    setOpenaiKey(ok);
+    if (!gk && !ok) setKeyModalOpen(true);
   }, []);
 
   // モデル変更時のアスペクト比補正
@@ -278,9 +283,13 @@ export default function Home() {
   // --- 生成（複数同時実行可。送信時の設定をスナップショットして独立に走らせる） ---
   const generate = useCallback(async () => {
     setError(null);
-    if (!apiKey) {
+    if (!activeKey) {
       setKeyModalOpen(true);
-      setError("先に Gemini APIキーを設定してください。");
+      setError(
+        model.provider === "openai"
+          ? "先に OpenAI APIキーを設定してください。"
+          : "先に Gemini APIキーを設定してください。"
+      );
       return;
     }
     if (!promptText.trim() && selectedInputs.length === 0) {
@@ -320,7 +329,8 @@ export default function Home() {
       const refComp = await compressList(snap.refs);
       const refOriginals = snap.refs.map((x) => x.dataUrl);
       const params = {
-        apiKey,
+        geminiKey,
+        openaiKey,
         modelKey: snap.modelKey,
         aspectRatio: snap.aspectRatio,
         count: snap.count,
@@ -403,7 +413,7 @@ export default function Home() {
     } finally {
       setJobs((prev) => prev.filter((j) => j.id !== jobId));
     }
-  }, [apiKey, promptText, batchMode, selectedInputs, selectedRefs, modelKey, aspectRatio, count, model]);
+  }, [activeKey, geminiKey, openaiKey, promptText, batchMode, selectedInputs, selectedRefs, modelKey, aspectRatio, count, model]);
 
   // --- バッチ操作 ---
   const deleteBatch = useCallback(async (id: string) => {
@@ -528,14 +538,18 @@ export default function Home() {
             累計概算 <b className="text-amber-400">${totalCost.toFixed(3)}</b>
           </span>
           <Button
-            variant={apiKey ? "ghost" : "primary"}
+            variant={activeKey ? "ghost" : "primary"}
             className="px-2.5 py-1 text-xs"
             onClick={() => setKeyModalOpen(true)}
-            title={apiKey ? `設定済み: ${maskKey(apiKey)}` : "APIキー未設定"}
+            title={
+              activeKey
+                ? `${model.provider === "openai" ? "OpenAI" : "Gemini"}: ${maskKey(activeKey)}`
+                : `${model.provider === "openai" ? "OpenAI" : "Gemini"} APIキー未設定`
+            }
           >
             ⚙ APIキー
             <span
-              className={`ml-1 inline-block h-2 w-2 rounded-full ${apiKey ? "bg-emerald-400" : "bg-red-400"}`}
+              className={`ml-1 inline-block h-2 w-2 rounded-full ${activeKey ? "bg-emerald-400" : "bg-red-400"}`}
             />
           </Button>
         </div>
@@ -544,7 +558,10 @@ export default function Home() {
       <ApiKeyModal
         open={keyModalOpen}
         onClose={() => setKeyModalOpen(false)}
-        onSaved={(k) => setApiKeyState(k)}
+        onSaved={() => {
+          setGeminiKey(getApiKey("gemini"));
+          setOpenaiKey(getApiKey("openai"));
+        }}
       />
 
       <Lightbox

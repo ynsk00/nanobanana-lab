@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
-import { getModel } from "@/lib/pricing";
+import { getModel, openaiSizeForAspect, type ModelDef } from "@/lib/pricing";
 import type { GenerateResponse, ResultImage } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -22,26 +22,19 @@ function dataUrlToPart(dataUrl: string) {
   return { inlineData: { mimeType: match[1], data: match[2] } };
 }
 
+/** data URL を Node の Blob に変換（OpenAI multipart 用） */
+function dataUrlToBlobNode(dataUrl: string): Blob | null {
+  const match = dataUrl.match(/^data:(.*?);base64,(.*)$/s);
+  if (!match) return null;
+  const buf = Buffer.from(match[2], "base64");
+  return new Blob([buf], { type: match[1] || "image/png" });
+}
+
 function genId(): string {
-  return (
-    Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
-  );
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
 export async function POST(req: NextRequest) {
-  // ユーザーがブラウザの設定画面で入力したキーを優先。なければ環境変数。
-  const apiKey =
-    req.headers.get("x-gemini-api-key")?.trim() || process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      {
-        error:
-          "Gemini APIキーが設定されていません。右上の「⚙ APIキー」から設定してください。",
-      },
-      { status: 401 }
-    );
-  }
-
   let body: GenerateRequest;
   try {
     body = await req.json();
@@ -60,12 +53,43 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  if (model.provider === "openai") {
+    const apiKey =
+      req.headers.get("x-openai-api-key")?.trim() || process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "OpenAI APIキーが設定されていません。右上の「⚙ APIキー」から設定してください。" },
+        { status: 401 }
+      );
+    }
+    return handleOpenAI(model, apiKey, { aspectRatio, count, prompt, inputImages, referenceImages });
+  }
+
+  const apiKey =
+    req.headers.get("x-gemini-api-key")?.trim() || process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "Gemini APIキーが設定されていません。右上の「⚙ APIキー」から設定してください。" },
+      { status: 401 }
+    );
+  }
+  return handleGoogle(model, apiKey, { aspectRatio, count, prompt, inputImages, referenceImages });
+}
+
+interface HandlerArgs {
+  aspectRatio: string;
+  count: number;
+  prompt: string;
+  inputImages: string[];
+  referenceImages: string[];
+}
+
+// ---------- Google (Gemini / Nano Banana) ----------
+async function handleGoogle(model: ModelDef, apiKey: string, args: HandlerArgs) {
+  const { aspectRatio, count, prompt, inputImages, referenceImages } = args;
   const ai = new GoogleGenAI({ apiKey });
 
-  // contents パートを構築。各画像の直前に役割ラベルのテキストを入れ、
-  // モデルが @inN / @refN を画像と正しく対応づけられるようにする。
   const parts: Record<string, unknown>[] = [];
-
   if (inputImages.length + referenceImages.length > 0) {
     parts.push({
       text:
@@ -77,7 +101,6 @@ export async function POST(req: NextRequest) {
 
   let sentInputCount = 0;
   let sentReferenceCount = 0;
-
   inputImages.forEach((dataUrl, i) => {
     const part = dataUrlToPart(dataUrl);
     if (part) {
@@ -86,7 +109,6 @@ export async function POST(req: NextRequest) {
       sentInputCount++;
     }
   });
-
   referenceImages.forEach((dataUrl, i) => {
     const part = dataUrlToPart(dataUrl);
     if (part) {
@@ -95,38 +117,26 @@ export async function POST(req: NextRequest) {
       sentReferenceCount++;
     }
   });
-
-  // 受け取ったのに添付できなかった画像があれば警告（data URL不正など）
-  const droppedInputs = inputImages.length - sentInputCount;
-  const droppedRefs = referenceImages.length - sentReferenceCount;
-
-  if (prompt?.trim()) {
-    parts.push({ text: prompt });
-  } else if (parts.length > 0) {
+  if (prompt?.trim()) parts.push({ text: prompt });
+  else if (parts.length > 0)
     parts.push({ text: "上記の入力画像をもとに、参照画像を参考にして画像を生成してください。" });
-  }
 
   const start = Date.now();
-
-  // count 枚を並列リクエスト（画像モデルは1リクエスト=1枚が安定するため）
-  const tasks = Array.from({ length: count }).map(async () => {
-    const response = await ai.models.generateContent({
+  const tasks = Array.from({ length: count }).map(() =>
+    ai.models.generateContent({
       model: model.id,
       contents: [{ role: "user", parts }],
       config: {
         responseModalities: ["IMAGE"],
         imageConfig: { aspectRatio },
       } as Record<string, unknown>,
-    });
-    return response;
-  });
-
+    })
+  );
   const settled = await Promise.allSettled(tasks);
   const durationMs = Date.now() - start;
 
   const results: ResultImage[] = [];
   const errors: string[] = [];
-
   for (const s of settled) {
     if (s.status === "rejected") {
       errors.push(String(s.reason?.message ?? s.reason ?? "不明なエラー"));
@@ -152,11 +162,9 @@ export async function POST(req: NextRequest) {
       }
     }
     if (!found) {
-      // 画像が返らなかった場合（安全フィルタ等）。理由を拾えるなら拾う。
       const reason =
         candidate?.finishReason ||
-        (s.value as { promptFeedback?: { blockReason?: string } }).promptFeedback
-          ?.blockReason ||
+        (s.value as { promptFeedback?: { blockReason?: string } }).promptFeedback?.blockReason ||
         note ||
         "画像が返却されませんでした";
       errors.push(String(reason));
@@ -164,15 +172,101 @@ export async function POST(req: NextRequest) {
   }
 
   const costUsd = results.length * model.pricePerImage;
-
-  if (droppedInputs > 0) errors.push(`入力画像 ${droppedInputs} 枚を添付できませんでした(形式エラー)`);
-  if (droppedRefs > 0) errors.push(`参照画像 ${droppedRefs} 枚を添付できませんでした(形式エラー)`);
-
   const payload: GenerateResponse = {
     results,
     costUsd,
     durationMs,
     errors,
+    sentInputCount,
+    sentReferenceCount,
+  };
+  return NextResponse.json(payload);
+}
+
+// ---------- OpenAI (GPT Image) ----------
+async function handleOpenAI(model: ModelDef, apiKey: string, args: HandlerArgs) {
+  const { aspectRatio, count, prompt, inputImages, referenceImages } = args;
+  const size = openaiSizeForAspect(aspectRatio);
+  const n = Math.min(Math.max(1, count), 10);
+  const quality = model.quality || "auto";
+  const finalPrompt = prompt?.trim() || "Create an image based on the provided reference images.";
+
+  const allImages = [...inputImages, ...referenceImages];
+  const start = Date.now();
+
+  let res: Response;
+  let sentInputCount = 0;
+  let sentReferenceCount = 0;
+
+  try {
+    if (allImages.length > 0) {
+      // 画像あり → 編集エンドポイント (multipart)
+      const fd = new FormData();
+      fd.append("model", "gpt-image-1");
+      fd.append("prompt", finalPrompt);
+      fd.append("n", String(n));
+      fd.append("size", size);
+      fd.append("quality", quality);
+      inputImages.forEach((d, i) => {
+        const blob = dataUrlToBlobNode(d);
+        if (blob) {
+          fd.append("image[]", blob, `input_${i + 1}.png`);
+          sentInputCount++;
+        }
+      });
+      referenceImages.forEach((d, i) => {
+        const blob = dataUrlToBlobNode(d);
+        if (blob) {
+          fd.append("image[]", blob, `reference_${i + 1}.png`);
+          sentReferenceCount++;
+        }
+      });
+      res = await fetch("https://api.openai.com/v1/images/edits", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: fd,
+      });
+    } else {
+      // 画像なし → 生成エンドポイント (JSON)
+      res = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-image-1", prompt: finalPrompt, n, size, quality }),
+      });
+    }
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "OpenAIへの接続に失敗しました。" },
+      { status: 502 }
+    );
+  }
+
+  const durationMs = Date.now() - start;
+
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({} as { error?: { message?: string } }));
+    const msg = j?.error?.message || `OpenAI API エラー (HTTP ${res.status})`;
+    return NextResponse.json({ error: msg }, { status: res.status === 401 ? 401 : 502 });
+  }
+
+  const data = (await res.json()) as { data?: { b64_json?: string }[] };
+  const results: ResultImage[] = (data.data || [])
+    .filter((d) => d.b64_json)
+    .map((d) => ({
+      id: genId(),
+      dataUrl: `data:image/png;base64,${d.b64_json}`,
+      mimeType: "image/png",
+    }));
+
+  const costUsd = results.length * model.pricePerImage;
+  const payload: GenerateResponse = {
+    results,
+    costUsd,
+    durationMs,
+    errors: results.length ? [] : ["画像が返却されませんでした"],
     sentInputCount,
     sentReferenceCount,
   };

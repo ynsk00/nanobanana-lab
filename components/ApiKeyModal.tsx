@@ -2,7 +2,15 @@
 
 import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui";
-import { getApiKey, setApiKey } from "@/lib/settings";
+import {
+  getApiKey,
+  setApiKey,
+  PROVIDER_LABELS,
+  PROVIDER_DOCS,
+  type KeyProvider,
+} from "@/lib/settings";
+
+type Status = { type: "idle" | "checking" | "ok" | "error"; msg?: string };
 
 export function ApiKeyModal({
   open,
@@ -11,61 +19,59 @@ export function ApiKeyModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onSaved: (key: string) => void;
+  onSaved: () => void;
 }) {
-  const [value, setValue] = useState("");
-  const [show, setShow] = useState(false);
-  const [status, setStatus] = useState<
-    { type: "idle" | "checking" | "ok" | "error"; msg?: string }
-  >({ type: "idle" });
+  const [values, setValues] = useState<Record<KeyProvider, string>>({ gemini: "", openai: "" });
+  const [show, setShow] = useState<Record<KeyProvider, boolean>>({ gemini: false, openai: false });
+  const [status, setStatus] = useState<Record<KeyProvider, Status>>({
+    gemini: { type: "idle" },
+    openai: { type: "idle" },
+  });
 
   useEffect(() => {
     if (open) {
-      setValue(getApiKey());
-      setStatus({ type: "idle" });
-      setShow(false);
+      setValues({ gemini: getApiKey("gemini"), openai: getApiKey("openai") });
+      setStatus({ gemini: { type: "idle" }, openai: { type: "idle" } });
+      setShow({ gemini: false, openai: false });
     }
   }, [open]);
 
   if (!open) return null;
 
-  async function validate(): Promise<boolean> {
-    setStatus({ type: "checking" });
+  async function validate(provider: KeyProvider): Promise<boolean> {
+    const key = values[provider].trim();
+    if (!key) return true; // 空欄は検証スキップ（クリア扱い）
+    setStatus((s) => ({ ...s, [provider]: { type: "checking" } }));
     try {
       const res = await fetch("/api/validate-key", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: value.trim() }),
+        body: JSON.stringify({ apiKey: key, provider }),
       });
       const data = await res.json();
       if (data.valid) {
-        setStatus({ type: "ok", msg: "有効なキーです。" });
+        setStatus((s) => ({ ...s, [provider]: { type: "ok", msg: "有効なキーです。" } }));
         return true;
       }
-      setStatus({ type: "error", msg: data.error || "キーが無効です。" });
+      setStatus((s) => ({ ...s, [provider]: { type: "error", msg: data.error || "キーが無効です。" } }));
       return false;
     } catch (e) {
-      setStatus({
-        type: "error",
-        msg: e instanceof Error ? e.message : "検証に失敗しました。",
-      });
+      setStatus((s) => ({
+        ...s,
+        [provider]: { type: "error", msg: e instanceof Error ? e.message : "検証に失敗しました。" },
+      }));
       return false;
     }
   }
 
   async function handleSave() {
-    const ok = await validate();
-    if (!ok) return;
-    setApiKey(value.trim());
-    onSaved(value.trim());
+    // 入力されたキーはまとめて検証してから保存
+    const providers: KeyProvider[] = ["gemini", "openai"];
+    const oks = await Promise.all(providers.map((p) => validate(p)));
+    if (oks.some((ok) => !ok)) return;
+    providers.forEach((p) => setApiKey(p, values[p].trim()));
+    onSaved();
     onClose();
-  }
-
-  function handleClear() {
-    setApiKey("");
-    setValue("");
-    onSaved("");
-    setStatus({ type: "idle" });
   }
 
   return (
@@ -78,66 +84,84 @@ export function ApiKeyModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-base font-bold">⚙ Gemini APIキー設定</h2>
+          <h2 className="text-base font-bold">⚙ APIキー設定</h2>
           <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200">
             ×
           </button>
         </div>
 
-        <p className="mb-3 text-xs leading-relaxed text-zinc-400">
-          キーは{" "}
-          <a
-            href="https://aistudio.google.com/apikey"
-            target="_blank"
-            rel="noreferrer"
-            className="text-amber-400 underline"
-          >
-            Google AI Studio
-          </a>{" "}
-          で取得できます。入力したキーは<b className="text-zinc-200">このブラウザ内（localStorage）にのみ</b>
-          保存され、生成時にあなたのリクエストからGoogleへ直接送られます。サーバーには保存されません。
+        <p className="mb-4 text-xs leading-relaxed text-zinc-400">
+          使うモデルに応じてキーを設定してください。Nano Banana は <b className="text-zinc-200">Gemini</b>、
+          GPT Image は <b className="text-zinc-200">OpenAI</b> のキーが必要です。キーは
+          <b className="text-zinc-200">このブラウザ内(localStorage)にのみ</b>保存され、サーバーには保存されません。
         </p>
 
-        <div className="flex gap-2">
-          <input
-            type={show ? "text" : "password"}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="AIza..."
-            autoComplete="off"
-            className="flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm outline-none focus:border-amber-400/60"
-          />
-          <Button variant="ghost" onClick={() => setShow((s) => !s)}>
-            {show ? "隠す" : "表示"}
-          </Button>
+        <div className="space-y-4">
+          {(["gemini", "openai"] as KeyProvider[]).map((provider) => {
+            const st = status[provider];
+            return (
+              <div key={provider}>
+                <div className="mb-1 flex items-center justify-between">
+                  <label className="text-xs font-semibold text-zinc-200">
+                    {PROVIDER_LABELS[provider]}
+                  </label>
+                  <a
+                    href={PROVIDER_DOCS[provider]}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[11px] text-amber-400 underline"
+                  >
+                    キーを取得
+                  </a>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={show[provider] ? "text" : "password"}
+                    value={values[provider]}
+                    onChange={(e) => setValues((v) => ({ ...v, [provider]: e.target.value }))}
+                    placeholder={provider === "gemini" ? "AIza..." : "sk-..."}
+                    autoComplete="off"
+                    className="flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm outline-none focus:border-amber-400/60"
+                  />
+                  <Button
+                    variant="ghost"
+                    onClick={() => setShow((s) => ({ ...s, [provider]: !s[provider] }))}
+                  >
+                    {show[provider] ? "隠す" : "表示"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => validate(provider)}
+                    disabled={!values[provider].trim() || st.type === "checking"}
+                  >
+                    テスト
+                  </Button>
+                </div>
+                {st.type !== "idle" && (
+                  <p
+                    className={`mt-1 text-xs ${
+                      st.type === "ok"
+                        ? "text-emerald-400"
+                        : st.type === "error"
+                        ? "text-red-400"
+                        : "text-zinc-400"
+                    }`}
+                  >
+                    {st.type === "checking" ? "検証中…" : st.msg}
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
 
-        {status.type !== "idle" && (
-          <p
-            className={`mt-2 text-xs ${
-              status.type === "ok"
-                ? "text-emerald-400"
-                : status.type === "error"
-                ? "text-red-400"
-                : "text-zinc-400"
-            }`}
-          >
-            {status.type === "checking" ? "検証中…" : status.msg}
-          </p>
-        )}
-
-        <div className="mt-4 flex items-center justify-between">
-          <Button variant="danger" onClick={handleClear} disabled={!value}>
-            キーを削除
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            閉じる
           </Button>
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={() => validate()} disabled={!value.trim() || status.type === "checking"}>
-              接続テスト
-            </Button>
-            <Button variant="primary" onClick={handleSave} disabled={!value.trim() || status.type === "checking"}>
-              保存して有効化
-            </Button>
-          </div>
+          <Button variant="primary" onClick={handleSave}>
+            保存して有効化
+          </Button>
         </div>
       </div>
     </div>
