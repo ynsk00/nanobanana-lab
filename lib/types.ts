@@ -41,6 +41,8 @@ export interface ResultImage {
   mimeType: string;
   /** モデルが返したテキスト（ある場合） */
   note?: string;
+  /** 「入力ごとに生成」モードで、この結果の元になった入力画像名 */
+  sourceName?: string;
 }
 
 /** 1回の「生成」= 1バッチ */

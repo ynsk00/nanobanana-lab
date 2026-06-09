@@ -36,6 +36,17 @@ interface SelEntry {
   role: Role;
 }
 
+type BatchMode = "combined" | "perInput";
+
+/** ImageItem の配列を圧縮版 data URL の配列にする */
+function compressList(items: ImageItem[], maxSize?: number, quality?: number) {
+  return Promise.all(items.map((x) => compressForUpload(x.dataUrl, maxSize, quality)));
+}
+
+function sumBytes(arr: string[]) {
+  return arr.reduce((s, d) => s + approxBytes(d), 0);
+}
+
 /** バッチが使った画像を取り出す（旧バッチはthumbsからフォールバック） */
 function getUsedImages(batch: Batch): UsedImage[] {
   if (batch.usedImages?.length) return batch.usedImages;
@@ -63,6 +74,7 @@ export default function Home() {
   const [modelKey, setModelKey] = useState(DEFAULT_MODEL_KEY);
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [count, setCount] = useState(1);
+  const [batchMode, setBatchMode] = useState<BatchMode>("combined");
 
   // --- 実行中ジョブ（複数同時実行可） ---
   const [jobs, setJobs] = useState<{ id: string; startedAt: number; label: string }[]>([]);
@@ -261,7 +273,10 @@ export default function Home() {
     [selection, pool]
   );
 
-  const estCost = (count * model.pricePerImage).toFixed(3);
+  // 「入力ごと」モードは入力枚数 × count が総出力枚数
+  const totalImages =
+    batchMode === "perInput" ? Math.max(1, selectedInputs.length) * count : count;
+  const estCost = (totalImages * model.pricePerImage).toFixed(3);
 
   // --- 生成（複数同時実行可。送信時の設定をスナップショットして独立に走らせる） ---
   const generate = useCallback(async () => {
@@ -275,11 +290,17 @@ export default function Home() {
       setError("プロンプトまたは入力画像を指定してください。");
       return;
     }
+    if (batchMode === "perInput" && selectedInputs.length === 0) {
+      setError("「入力ごとに生成」には入力画像を1枚以上選んでください。");
+      return;
+    }
 
     // この生成の設定を固定（以降のフォーム変更や他ジョブと干渉しない）
+    const jobStart = Date.now();
     const jobId = genId("job_");
     const snap = {
       prompt: promptText,
+      mode: batchMode,
       modelKey,
       modelLabel: model.label,
       modelId: model.id,
@@ -288,61 +309,90 @@ export default function Home() {
       inputs: selectedInputs,
       refs: selectedRefs,
     };
-    setJobs((prev) => [...prev, { id: jobId, startedAt: Date.now(), label: `${snap.modelLabel} ×${snap.count}` }]);
+    const jobTotal =
+      snap.mode === "perInput" ? Math.max(1, snap.inputs.length) * snap.count : snap.count;
+    const jobLabel =
+      snap.mode === "perInput"
+        ? `${snap.modelLabel} 入力${snap.inputs.length}×${snap.count}`
+        : `${snap.modelLabel} ×${snap.count}`;
+    setJobs((prev) => [...prev, { id: jobId, startedAt: jobStart, label: jobLabel }]);
 
     try {
-      // 送信前圧縮（ボディ上限対策）。原本はプールに残す。
-      let payloadIn = await Promise.all(snap.inputs.map((x) => compressForUpload(x.dataUrl)));
-      let payloadRef = await Promise.all(snap.refs.map((x) => compressForUpload(x.dataUrl)));
-      const total = (a: string[], b: string[]) =>
-        [...a, ...b].reduce((s, d) => s + approxBytes(d), 0);
-      if (total(payloadIn, payloadRef) > MAX_UPLOAD_BYTES) {
-        payloadIn = await Promise.all(snap.inputs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72)));
-        payloadRef = await Promise.all(snap.refs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72)));
-      }
-      const totalBytes = total(payloadIn, payloadRef);
-      if (totalBytes > MAX_UPLOAD_BYTES) {
-        throw new Error(
-          `添付画像の合計サイズが大きすぎます(約${(totalBytes / 1_000_000).toFixed(1)}MB)。枚数を減らすか、より小さい画像を使ってください。`
-        );
-      }
+      // 履歴・送信用に既定品質で圧縮（原本はプールに残す）
+      const inComp = await compressList(snap.inputs);
+      const refComp = await compressList(snap.refs);
 
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey },
-        body: JSON.stringify({
-          modelKey: snap.modelKey,
-          aspectRatio: snap.aspectRatio,
-          count: snap.count,
-          prompt: snap.prompt,
-          inputImages: payloadIn,
-          referenceImages: payloadRef,
-        }),
-      });
-      if (!res.ok) {
-        if (res.status === 413) {
+      // 入力画像群を受け取り1リクエスト送信する（ボディ上限を超えるなら再圧縮）
+      const sendRequest = async (inputItems: ImageItem[]): Promise<GenerateResponse> => {
+        let inP = inputItems.map((it) => inComp[snap.inputs.indexOf(it)]);
+        let refP = refComp;
+        if (sumBytes(inP) + sumBytes(refP) > MAX_UPLOAD_BYTES) {
+          inP = await compressList(inputItems, 1024, 0.72);
+          refP = await compressList(snap.refs, 1024, 0.72);
+        }
+        if (sumBytes(inP) + sumBytes(refP) > MAX_UPLOAD_BYTES) {
           throw new Error(
-            "送信データが大きすぎます(413)。入力画像の枚数を減らすか、小さい画像を使ってください。"
+            `添付画像の合計サイズが大きすぎます(約${((sumBytes(inP) + sumBytes(refP)) / 1_000_000).toFixed(1)}MB)。より小さい画像を使ってください。`
           );
         }
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || `生成に失敗しました (${res.status})`);
-      }
-      const data: GenerateResponse = await res.json();
+        const res = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey },
+          body: JSON.stringify({
+            modelKey: snap.modelKey,
+            aspectRatio: snap.aspectRatio,
+            count: snap.count,
+            prompt: snap.prompt,
+            inputImages: inP,
+            referenceImages: refP,
+          }),
+        });
+        if (!res.ok) {
+          if (res.status === 413) {
+            throw new Error("送信データが大きすぎます(413)。より小さい画像を使ってください。");
+          }
+          const j = await res.json().catch(() => ({}));
+          throw new Error(j.error || `生成に失敗しました (${res.status})`);
+        }
+        return (await res.json()) as GenerateResponse;
+      };
 
-      // 履歴（使用画像）を圧縮版スナップショットで保存
+      // モードに応じて1回 or 入力ごとに並列実行
+      let results: GenerateResponse["results"] = [];
+      let costUsd = 0;
+      const errors: string[] = [];
+
+      if (snap.mode === "perInput") {
+        const settled = await Promise.allSettled(snap.inputs.map((inp) => sendRequest([inp])));
+        settled.forEach((s, idx) => {
+          const srcName = snap.inputs[idx].name;
+          if (s.status === "fulfilled") {
+            costUsd += s.value.costUsd;
+            errors.push(...s.value.errors.map((e) => `${srcName}: ${e}`));
+            results.push(...s.value.results.map((r) => ({ ...r, sourceName: srcName })));
+          } else {
+            errors.push(`${srcName}: ${s.reason?.message ?? s.reason}`);
+          }
+        });
+      } else {
+        const data = await sendRequest(snap.inputs);
+        results = data.results;
+        costUsd = data.costUsd;
+        errors.push(...data.errors);
+      }
+
       const usedImages: UsedImage[] = [
         ...snap.inputs.map((x, i) => ({
           id: x.id,
-          dataUrl: payloadIn[i],
-          mimeType: mimeFromDataUrl(payloadIn[i]),
+          dataUrl: inComp[i],
+          mimeType: mimeFromDataUrl(inComp[i]),
           name: x.name,
           role: "input" as Role,
         })),
         ...snap.refs.map((x, i) => ({
           id: x.id,
-          dataUrl: payloadRef[i],
-          mimeType: mimeFromDataUrl(payloadRef[i]),
+          dataUrl: refComp[i],
+          mimeType: mimeFromDataUrl(refComp[i]),
           name: x.name,
           role: "reference" as Role,
         })),
@@ -355,25 +405,25 @@ export default function Home() {
         modelLabel: snap.modelLabel,
         modelId: snap.modelId,
         aspectRatio: snap.aspectRatio,
-        requestedCount: snap.count,
+        requestedCount: jobTotal,
         prompt: snap.prompt,
         usedImages,
-        results: data.results,
-        costUsd: data.costUsd,
-        durationMs: data.durationMs,
-        errors: data.errors || [],
+        results,
+        costUsd,
+        durationMs: Date.now() - jobStart,
+        errors,
       };
       await db.put("batches", batch);
       setBatches((p) => [batch, ...p]);
-      if (data.results.length === 0) {
-        setError("画像が返却されませんでした: " + (data.errors?.join(" / ") || "理由不明"));
+      if (results.length === 0) {
+        setError("画像が返却されませんでした: " + (errors.join(" / ") || "理由不明"));
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setJobs((prev) => prev.filter((j) => j.id !== jobId));
     }
-  }, [apiKey, promptText, selectedInputs, selectedRefs, modelKey, aspectRatio, count, model]);
+  }, [apiKey, promptText, batchMode, selectedInputs, selectedRefs, modelKey, aspectRatio, count, model]);
 
   // --- バッチ操作 ---
   const deleteBatch = useCallback(async (id: string) => {
@@ -645,6 +695,44 @@ export default function Home() {
 
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="sm:col-span-2">
+                  <Label>バッチ方式</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        {
+                          key: "combined" as BatchMode,
+                          title: "まとめて生成",
+                          desc: "選択した入力画像を1回の生成にまとめて渡す（count枚出力）",
+                        },
+                        {
+                          key: "perInput" as BatchMode,
+                          title: "入力ごとに生成",
+                          desc: "入力画像1枚ずつに同じプロンプト/参照を適用（入力枚数×count）",
+                        },
+                      ] as const
+                    ).map((m) => (
+                      <button
+                        key={m.key}
+                        onClick={() => setBatchMode(m.key)}
+                        className={`rounded-lg border px-3 py-2 text-left transition ${
+                          batchMode === m.key
+                            ? "border-amber-400 bg-amber-400/10"
+                            : "border-zinc-700 hover:border-zinc-500"
+                        }`}
+                      >
+                        <div className="text-sm font-semibold">{m.title}</div>
+                        <div className="mt-0.5 text-[11px] leading-tight text-zinc-400">{m.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                  {batchMode === "perInput" && (
+                    <p className="mt-1 text-[11px] text-amber-300/80">
+                      入力 {selectedInputs.length} 枚 × {count} = 合計 {totalImages} 枚を一括生成します。
+                    </p>
+                  )}
+                </div>
+
+                <div className="sm:col-span-2">
                   <Label>モデル</Label>
                   <div className="grid grid-cols-2 gap-2">
                     {Object.values(MODELS).map((m) => (
@@ -685,7 +773,9 @@ export default function Home() {
                 </div>
 
                 <div>
-                  <Label>出力枚数: {count}</Label>
+                  <Label>
+                    {batchMode === "perInput" ? `1入力あたりの枚数: ${count}` : `出力枚数: ${count}`}
+                  </Label>
                   <input
                     type="range"
                     min={1}
@@ -703,7 +793,7 @@ export default function Home() {
                 </Button>
                 <div className="text-xs text-zinc-400">
                   概算コスト <b className="text-amber-400">${estCost}</b>
-                  <span className="text-zinc-600"> （{count}枚 × ${model.pricePerImage.toFixed(3)}）</span>
+                  <span className="text-zinc-600"> （合計{totalImages}枚 × ${model.pricePerImage.toFixed(3)}）</span>
                 </div>
               </div>
 
@@ -879,6 +969,11 @@ function BatchCard({
               onClick={() => onOpenImage({ ...r, assignable: true })}
               title="クリックで拡大表示"
             />
+            {r.sourceName && (
+              <span className="absolute left-1 top-1 max-w-[90%] truncate rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-zinc-200">
+                ← {r.sourceName}
+              </span>
+            )}
             <div className="pointer-events-none absolute inset-x-0 bottom-0 flex translate-y-full items-stretch gap-1 bg-gradient-to-t from-black/85 to-transparent p-1.5 transition group-hover:translate-y-0 group-hover:pointer-events-auto">
               <Button
                 variant="default"
