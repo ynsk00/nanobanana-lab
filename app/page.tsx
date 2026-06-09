@@ -44,6 +44,13 @@ export default function Home() {
   const [apiKey, setApiKeyState] = useState("");
   const [keyModalOpen, setKeyModalOpen] = useState(false);
 
+  // --- クリップボード貼り付け先（クリックで選んだライブラリ） ---
+  const [pasteTarget, setPasteTarget] = useState<"inputs" | "references">("inputs");
+  const pasteTargetRef = useRef<"inputs" | "references">("inputs");
+  useEffect(() => {
+    pasteTargetRef.current = pasteTarget;
+  }, [pasteTarget]);
+
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const model = getModel(modelKey);
 
@@ -106,6 +113,31 @@ export default function Home() {
     },
     []
   );
+
+  // ⌘V / Ctrl+V でクリップボードの画像をアクティブなライブラリへ貼り付け
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      const dt = e.clipboardData;
+      if (!dt) return;
+      const files: File[] = [];
+      for (const item of Array.from(dt.items || [])) {
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const f = item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (files.length === 0 && dt.files) {
+        for (const f of Array.from(dt.files)) {
+          if (f.type.startsWith("image/")) files.push(f);
+        }
+      }
+      if (files.length === 0) return; // 画像でなければ通常の貼り付けを妨げない
+      e.preventDefault();
+      addImagesToLibrary(files, pasteTargetRef.current);
+    }
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [addImagesToLibrary]);
 
   const deleteImage = useCallback(
     async (item: ImageItem, store: "inputs" | "references") => {
@@ -368,6 +400,8 @@ export default function Home() {
             selectedIds={selInputIds}
             badgePrefix="in"
             store="inputs"
+            active={pasteTarget === "inputs"}
+            onActivate={() => setPasteTarget("inputs")}
             onUpload={(f) => addImagesToLibrary(f, "inputs")}
             onToggle={(it) => toggleSelect(it, "input")}
             onDelete={(it) => deleteImage(it, "inputs")}
@@ -378,6 +412,8 @@ export default function Home() {
             selectedIds={selRefIds}
             badgePrefix="ref"
             store="references"
+            active={pasteTarget === "references"}
+            onActivate={() => setPasteTarget("references")}
             onUpload={(f) => addImagesToLibrary(f, "references")}
             onToggle={(it) => toggleSelect(it, "ref")}
             onDelete={(it) => deleteImage(it, "references")}
@@ -625,6 +661,8 @@ function ImageLibraryPanel({
   selectedIds,
   badgePrefix,
   store,
+  active,
+  onActivate,
   onUpload,
   onToggle,
   onDelete,
@@ -634,6 +672,8 @@ function ImageLibraryPanel({
   selectedIds: string[];
   badgePrefix: string;
   store: "inputs" | "references";
+  active: boolean;
+  onActivate: () => void;
   onUpload: (files: FileList) => void;
   onToggle: (item: ImageItem) => void;
   onDelete: (item: ImageItem) => void;
@@ -642,7 +682,17 @@ function ImageLibraryPanel({
   const [drag, setDrag] = useState(false);
   return (
     <Panel
-      title={title}
+      title={
+        <span className="flex items-center gap-2">
+          {title}
+          {active && (
+            <span className="rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">
+              ⌘V対象
+            </span>
+          )}
+        </span>
+      }
+      className={active ? "ring-1 ring-amber-400/50" : ""}
       right={
         <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => fileRef.current?.click()}>
           ＋追加
@@ -661,6 +711,9 @@ function ImageLibraryPanel({
         }}
       />
       <div
+        tabIndex={0}
+        onClick={onActivate}
+        onFocus={onActivate}
         onDragOver={(e) => {
           e.preventDefault();
           setDrag(true);
@@ -669,9 +722,10 @@ function ImageLibraryPanel({
         onDrop={(e) => {
           e.preventDefault();
           setDrag(false);
+          onActivate();
           if (e.dataTransfer.files.length) onUpload(e.dataTransfer.files);
         }}
-        className={`rounded-lg ${drag ? "ring-2 ring-amber-400" : ""}`}
+        className={`rounded-lg outline-none ${drag ? "ring-2 ring-amber-400" : ""}`}
       >
         <LibraryGrid
           items={items}
@@ -679,8 +733,11 @@ function ImageLibraryPanel({
           badgePrefix={badgePrefix}
           onToggle={onToggle}
           onDelete={onDelete}
-          emptyText="ドラッグ&ドロップ or ＋追加 で登録"
+          emptyText="ドラッグ&ドロップ / ＋追加 / クリックして ⌘V で貼り付け"
         />
+        <p className="mt-2 text-center text-[10px] text-zinc-600">
+          このパネルをクリックして <kbd className="rounded bg-zinc-800 px-1">⌘V</kbd> でクリップボードの画像を貼り付け
+        </p>
       </div>
     </Panel>
   );
