@@ -3,15 +3,24 @@
 import React, { useEffect } from "react";
 import { Button } from "@/components/ui";
 import { dataUrlToBlob, downloadBlob, extFromMime } from "@/lib/image";
+import type { Role } from "@/lib/types";
+
+export interface LightboxImage {
+  id: string;
+  dataUrl: string;
+  mimeType: string;
+  /** 入力/参照へ割り当て可能か（結果画像のときtrue） */
+  assignable?: boolean;
+}
 
 export function Lightbox({
   image,
   onClose,
-  onUseAsInput,
+  onAssign,
 }: {
-  image: { id: string; dataUrl: string; mimeType: string } | null;
+  image: LightboxImage | null;
   onClose: () => void;
-  onUseAsInput: (dataUrl: string, mimeType: string) => void;
+  onAssign: (dataUrl: string, mimeType: string, role: Role) => void;
 }) {
   useEffect(() => {
     if (!image) return;
@@ -19,7 +28,6 @@ export function Lightbox({
       if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", onKey);
-    // 背面スクロールを止める
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
@@ -40,15 +48,28 @@ export function Lightbox({
         className="flex items-center justify-end gap-2 p-3"
         onClick={(e) => e.stopPropagation()}
       >
-        <Button
-          variant="default"
-          onClick={() => {
-            onUseAsInput(image.dataUrl, image.mimeType);
-            onClose();
-          }}
-        >
-          入力に使う
-        </Button>
+        {image.assignable && (
+          <>
+            <Button
+              variant="default"
+              onClick={() => {
+                onAssign(image.dataUrl, image.mimeType, "input");
+                onClose();
+              }}
+            >
+              入力に使う
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => {
+                onAssign(image.dataUrl, image.mimeType, "reference");
+                onClose();
+              }}
+            >
+              参照に使う
+            </Button>
+          </>
+        )}
         <Button
           variant="default"
           onClick={() =>

@@ -12,6 +12,20 @@ export interface ImageItem {
   createdAt: number;
 }
 
+/** 画像の役割 */
+export type Role = "input" | "reference";
+
+/** バッチが使用した画像（履歴・再編集用） */
+export interface UsedImage {
+  /** 生成時のプール画像ID（再編集時にプールに残っていれば再利用） */
+  id: string;
+  /** 送信した圧縮版のスナップショット（プールから消えていてもこれで復元） */
+  dataUrl: string;
+  mimeType: string;
+  name: string;
+  role: Role;
+}
+
 /** 保存済みプロンプト */
 export interface PromptItem {
   id: string;
@@ -39,9 +53,12 @@ export interface Batch {
   aspectRatio: string;
   requestedCount: number;
   prompt: string;
-  /** リクエスト時に添付した入力画像のサムネ（再現用に縮小版を保持） */
-  inputThumbs: string[];
-  referenceThumbs: string[];
+  /** リクエスト時に使用した画像（役割付き）。履歴・再編集に使う */
+  usedImages: UsedImage[];
+  /** @deprecated 旧バージョン互換（読み込み時のフォールバック用） */
+  inputThumbs?: string[];
+  /** @deprecated 旧バージョン互換 */
+  referenceThumbs?: string[];
   results: ResultImage[];
   /** 概算コスト(USD) */
   costUsd: number;

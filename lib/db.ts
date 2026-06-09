@@ -2,8 +2,15 @@
 // IndexedDB に保存する。ストアごとに keyPath="id" のオブジェクトを格納。
 
 const DB_NAME = "nanobanana-lab";
-const DB_VERSION = 1;
-export const STORES = ["inputs", "references", "prompts", "batches"] as const;
+const DB_VERSION = 2;
+// "pool" = 統合画像ライブラリ。inputs/references は旧バージョンからの移行用に残す。
+export const STORES = [
+  "pool",
+  "inputs",
+  "references",
+  "prompts",
+  "batches",
+] as const;
 export type StoreName = (typeof STORES)[number];
 
 let dbPromise: Promise<IDBDatabase> | null = null;

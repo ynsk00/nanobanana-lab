@@ -3,12 +3,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import { Button, Panel } from "@/components/ui";
-import { LibraryGrid } from "@/components/LibraryGrid";
+import { PoolGrid } from "@/components/PoolGrid";
 import { ApiKeyModal } from "@/components/ApiKeyModal";
-import { Lightbox } from "@/components/Lightbox";
+import { Lightbox, type LightboxImage } from "@/components/Lightbox";
 import { getApiKey, maskKey } from "@/lib/settings";
 import { MODELS, DEFAULT_MODEL_KEY, getModel } from "@/lib/pricing";
-import type { Batch, GenerateResponse, ImageItem, PromptItem } from "@/lib/types";
+import type {
+  Batch,
+  GenerateResponse,
+  ImageItem,
+  PromptItem,
+  Role,
+  UsedImage,
+} from "@/lib/types";
 import * as db from "@/lib/db";
 import {
   approxBytes,
@@ -18,22 +25,38 @@ import {
   extFromMime,
   fileToDataUrl,
   genId,
-  makeThumbnail,
+  mimeFromDataUrl,
 } from "@/lib/image";
 
 // Vercelサーバーレス関数のリクエストボディ上限(約4.5MB)に対する安全マージン
 const MAX_UPLOAD_BYTES = 4_000_000;
 
+interface SelEntry {
+  id: string;
+  role: Role;
+}
+
+/** バッチが使った画像を取り出す（旧バッチはthumbsからフォールバック） */
+function getUsedImages(batch: Batch): UsedImage[] {
+  if (batch.usedImages?.length) return batch.usedImages;
+  const legacy: UsedImage[] = [];
+  (batch.inputThumbs ?? []).forEach((d, i) =>
+    legacy.push({ id: `legacy_in_${i}`, dataUrl: d, mimeType: mimeFromDataUrl(d), name: `in${i + 1}`, role: "input" })
+  );
+  (batch.referenceThumbs ?? []).forEach((d, i) =>
+    legacy.push({ id: `legacy_ref_${i}`, dataUrl: d, mimeType: mimeFromDataUrl(d), name: `ref${i + 1}`, role: "reference" })
+  );
+  return legacy;
+}
+
 export default function Home() {
-  // --- ライブラリ ---
-  const [inputs, setInputs] = useState<ImageItem[]>([]);
-  const [references, setReferences] = useState<ImageItem[]>([]);
+  // --- データ ---
+  const [pool, setPool] = useState<ImageItem[]>([]);
   const [prompts, setPrompts] = useState<PromptItem[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
 
-  // --- 選択状態（添付） ---
-  const [selInputIds, setSelInputIds] = useState<string[]>([]);
-  const [selRefIds, setSelRefIds] = useState<string[]>([]);
+  // --- 選択（役割付き） ---
+  const [selection, setSelection] = useState<SelEntry[]>([]);
 
   // --- 生成設定 ---
   const [promptText, setPromptText] = useState("");
@@ -41,7 +64,7 @@ export default function Home() {
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [count, setCount] = useState(1);
 
-  // --- 生成中の状態 ---
+  // --- 生成中 ---
   const [generating, setGenerating] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -50,51 +73,50 @@ export default function Home() {
   const [apiKey, setApiKeyState] = useState("");
   const [keyModalOpen, setKeyModalOpen] = useState(false);
 
-  // --- 拡大表示(ライトボックス) ---
-  const [lightbox, setLightbox] = useState<{
-    id: string;
-    dataUrl: string;
-    mimeType: string;
-  } | null>(null);
-
-  // --- クリップボード貼り付け先（クリックで選んだライブラリ） ---
-  const [pasteTarget, setPasteTarget] = useState<"inputs" | "references">("inputs");
-  const pasteTargetRef = useRef<"inputs" | "references">("inputs");
-  useEffect(() => {
-    pasteTargetRef.current = pasteTarget;
-  }, [pasteTarget]);
+  // --- 拡大表示 ---
+  const [lightbox, setLightbox] = useState<LightboxImage | null>(null);
 
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
   const model = getModel(modelKey);
 
-  // 初回ロード: IndexedDB から復元
+  // 初回ロード（旧 inputs/references → pool へ移行）
   useEffect(() => {
     (async () => {
-      const [i, r, p, b] = await Promise.all([
+      const [poolItems, oldIn, oldRef, p, b] = await Promise.all([
+        db.getAll<ImageItem>("pool"),
         db.getAll<ImageItem>("inputs"),
         db.getAll<ImageItem>("references"),
         db.getAll<PromptItem>("prompts"),
         db.getAll<Batch>("batches"),
       ]);
-      setInputs(i.sort((a, b) => b.createdAt - a.createdAt));
-      setReferences(r.sort((a, b) => b.createdAt - a.createdAt));
+      let merged = poolItems;
+      const migrated =
+        typeof window !== "undefined" && localStorage.getItem("nbl_pool_migrated");
+      if (merged.length === 0 && !migrated && (oldIn.length || oldRef.length)) {
+        const map = new Map<string, ImageItem>();
+        [...oldIn, ...oldRef].forEach((it) => map.set(it.id, it));
+        merged = Array.from(map.values());
+        for (const it of merged) await db.put("pool", it);
+        localStorage.setItem("nbl_pool_migrated", "1");
+      }
+      setPool(merged.sort((a, b) => b.createdAt - a.createdAt));
       setPrompts(p.sort((a, b) => b.createdAt - a.createdAt));
       setBatches(b.sort((a, b) => b.createdAt - a.createdAt));
     })();
-    // APIキーを localStorage から復元。未設定なら設定モーダルを開く。
     const k = getApiKey();
     setApiKeyState(k);
     if (!k) setKeyModalOpen(true);
   }, []);
 
-  // モデル変更時、選択中アスペクト比がそのモデルで無効なら先頭に寄せる
+  // モデル変更時のアスペクト比補正
   useEffect(() => {
     if (!model.aspectRatios.includes(aspectRatio)) {
       setAspectRatio(model.aspectRatios[0]);
     }
   }, [model, aspectRatio]);
 
-  // 生成中の経過時間タイマー
+  // 経過タイマー
   useEffect(() => {
     if (!generating) return;
     const t0 = Date.now();
@@ -103,31 +125,27 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [generating]);
 
-  // --- ライブラリ操作 ---
-  const addImagesToLibrary = useCallback(
-    async (files: FileList | File[], store: "inputs" | "references") => {
-      const arr = Array.from(files).filter((f) => f.type.startsWith("image/"));
-      const items: ImageItem[] = [];
-      for (const f of arr) {
-        const dataUrl = await fileToDataUrl(f);
-        const item: ImageItem = {
-          id: genId("img_"),
-          dataUrl,
-          mimeType: f.type || "image/png",
-          name: f.name || "image",
-          origin: "upload",
-          createdAt: Date.now(),
-        };
-        await db.put(store, item);
-        items.push(item);
-      }
-      if (store === "inputs") setInputs((p) => [...items, ...p]);
-      else setReferences((p) => [...items, ...p]);
-    },
-    []
-  );
+  // --- プール操作 ---
+  const addImagesToPool = useCallback(async (files: FileList | File[]) => {
+    const arr = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    const items: ImageItem[] = [];
+    for (const f of arr) {
+      const dataUrl = await fileToDataUrl(f);
+      const item: ImageItem = {
+        id: genId("img_"),
+        dataUrl,
+        mimeType: f.type || "image/png",
+        name: f.name || "image",
+        origin: "upload",
+        createdAt: Date.now(),
+      };
+      await db.put("pool", item);
+      items.push(item);
+    }
+    if (items.length) setPool((p) => [...items, ...p]);
+  }, []);
 
-  // ⌘V / Ctrl+V でクリップボードの画像をアクティブなライブラリへ貼り付け
+  // ⌘V でクリップボードの画像をプールへ
   useEffect(() => {
     function onPaste(e: ClipboardEvent) {
       const dt = e.clipboardData;
@@ -144,72 +162,71 @@ export default function Home() {
           if (f.type.startsWith("image/")) files.push(f);
         }
       }
-      if (files.length === 0) return; // 画像でなければ通常の貼り付けを妨げない
+      if (files.length === 0) return;
       e.preventDefault();
-      addImagesToLibrary(files, pasteTargetRef.current);
+      addImagesToPool(files);
     }
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
-  }, [addImagesToLibrary]);
+  }, [addImagesToPool]);
 
-  const deleteImage = useCallback(
-    async (item: ImageItem, store: "inputs" | "references") => {
-      await db.del(store, item.id);
-      if (store === "inputs") {
-        setInputs((p) => p.filter((x) => x.id !== item.id));
-        setSelInputIds((p) => p.filter((id) => id !== item.id));
-      } else {
-        setReferences((p) => p.filter((x) => x.id !== item.id));
-        setSelRefIds((p) => p.filter((id) => id !== item.id));
-      }
-    },
-    []
-  );
-
-  const toggleSelect = useCallback(
-    (item: ImageItem, kind: "input" | "ref") => {
-      const setter = kind === "input" ? setSelInputIds : setSelRefIds;
-      setter((prev) =>
-        prev.includes(item.id)
-          ? prev.filter((id) => id !== item.id)
-          : [...prev, item.id]
-      );
-    },
-    []
-  );
-
-  // 生成結果を入力ライブラリへ取り込む
-  const useResultAsInput = useCallback(async (dataUrl: string, mimeType: string) => {
-    const item: ImageItem = {
-      id: genId("img_"),
-      dataUrl,
-      mimeType,
-      name: `generated_${new Date().toISOString().slice(0, 19)}`,
-      origin: "generated",
-      createdAt: Date.now(),
-    };
-    await db.put("inputs", item);
-    setInputs((p) => [item, ...p]);
-    setSelInputIds((p) => [...p, item.id]);
+  const deletePoolItem = useCallback(async (item: ImageItem) => {
+    await db.del("pool", item.id);
+    setPool((p) => p.filter((x) => x.id !== item.id));
+    setSelection((prev) => prev.filter((s) => s.id !== item.id));
   }, []);
 
-  // --- プロンプト・シンタックス挿入 ---
-  const insertToken = useCallback((token: string) => {
-    const ta = promptRef.current;
-    if (!ta) {
-      setPromptText((p) => `${p}${token}`);
-      return;
-    }
-    const start = ta.selectionStart ?? promptText.length;
-    const end = ta.selectionEnd ?? promptText.length;
-    const next = promptText.slice(0, start) + token + promptText.slice(end);
-    setPromptText(next);
-    requestAnimationFrame(() => {
-      ta.focus();
-      const pos = start + token.length;
-      ta.setSelectionRange(pos, pos);
+  // 役割割り当て（同じ役割を再クリックで解除、別役割で上書き）
+  const setRole = useCallback((item: ImageItem, role: Role) => {
+    setSelection((prev) => {
+      const ex = prev.find((s) => s.id === item.id);
+      if (ex && ex.role === role) return prev.filter((s) => s.id !== item.id);
+      return [...prev.filter((s) => s.id !== item.id), { id: item.id, role }];
     });
-  }, [promptText]);
+  }, []);
+
+  const removeFromSelection = useCallback((id: string) => {
+    setSelection((prev) => prev.filter((s) => s.id !== id));
+  }, []);
+
+  // 生成結果をプールへ取り込み、入力/参照に割り当て
+  const addResultToPool = useCallback(
+    async (dataUrl: string, mimeType: string, role: Role) => {
+      const item: ImageItem = {
+        id: genId("img_"),
+        dataUrl,
+        mimeType,
+        name: `generated_${new Date().toISOString().slice(0, 19)}`,
+        origin: "generated",
+        createdAt: Date.now(),
+      };
+      await db.put("pool", item);
+      setPool((p) => [item, ...p]);
+      setSelection((prev) => [...prev.filter((s) => s.id !== item.id), { id: item.id, role }]);
+    },
+    []
+  );
+
+  // --- プロンプト ---
+  const insertToken = useCallback(
+    (token: string) => {
+      const ta = promptRef.current;
+      if (!ta) {
+        setPromptText((p) => `${p}${token}`);
+        return;
+      }
+      const start = ta.selectionStart ?? promptText.length;
+      const end = ta.selectionEnd ?? promptText.length;
+      const next = promptText.slice(0, start) + token + promptText.slice(end);
+      setPromptText(next);
+      requestAnimationFrame(() => {
+        ta.focus();
+        const pos = start + token.length;
+        ta.setSelectionRange(pos, pos);
+      });
+    },
+    [promptText]
+  );
 
   const savePrompt = useCallback(async () => {
     if (!promptText.trim()) return;
@@ -228,19 +245,27 @@ export default function Home() {
     setPrompts((p) => p.filter((x) => x.id !== id));
   }, []);
 
-  // 選択中の画像（順序付き）
+  // 選択画像（順序付き）
   const selectedInputs = useMemo(
-    () => selInputIds.map((id) => inputs.find((x) => x.id === id)).filter(Boolean) as ImageItem[],
-    [selInputIds, inputs]
+    () =>
+      selection
+        .filter((s) => s.role === "input")
+        .map((s) => pool.find((x) => x.id === s.id))
+        .filter(Boolean) as ImageItem[],
+    [selection, pool]
   );
   const selectedRefs = useMemo(
-    () => selRefIds.map((id) => references.find((x) => x.id === id)).filter(Boolean) as ImageItem[],
-    [selRefIds, references]
+    () =>
+      selection
+        .filter((s) => s.role === "reference")
+        .map((s) => pool.find((x) => x.id === s.id))
+        .filter(Boolean) as ImageItem[],
+    [selection, pool]
   );
 
   const estCost = (count * model.pricePerImage).toFixed(3);
 
-  // --- 生成実行 ---
+  // --- 生成 ---
   const generate = useCallback(async () => {
     setError(null);
     if (!apiKey) {
@@ -254,29 +279,16 @@ export default function Home() {
     }
     setGenerating(true);
     try {
-      // 送信前に画像を縮小・圧縮(ボディ上限対策)。原本はライブラリに残す。
-      const [inputImages, referenceImages] = await Promise.all([
-        Promise.all(selectedInputs.map((x) => compressForUpload(x.dataUrl))),
-        Promise.all(selectedRefs.map((x) => compressForUpload(x.dataUrl))),
-      ]);
-
-      // それでも上限を超える場合は、より小さく再圧縮を試みる
-      let payloadIn = inputImages;
-      let payloadRef = referenceImages;
-      let totalBytes = [...payloadIn, ...payloadRef].reduce(
-        (s, d) => s + approxBytes(d),
-        0
-      );
-      if (totalBytes > MAX_UPLOAD_BYTES) {
-        [payloadIn, payloadRef] = await Promise.all([
-          Promise.all(selectedInputs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72))),
-          Promise.all(selectedRefs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72))),
-        ]);
-        totalBytes = [...payloadIn, ...payloadRef].reduce(
-          (s, d) => s + approxBytes(d),
-          0
-        );
+      // 送信前圧縮（ボディ上限対策）。原本はプールに残す。
+      let payloadIn = await Promise.all(selectedInputs.map((x) => compressForUpload(x.dataUrl)));
+      let payloadRef = await Promise.all(selectedRefs.map((x) => compressForUpload(x.dataUrl)));
+      const total = (a: string[], b: string[]) =>
+        [...a, ...b].reduce((s, d) => s + approxBytes(d), 0);
+      if (total(payloadIn, payloadRef) > MAX_UPLOAD_BYTES) {
+        payloadIn = await Promise.all(selectedInputs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72)));
+        payloadRef = await Promise.all(selectedRefs.map((x) => compressForUpload(x.dataUrl, 1024, 0.72)));
       }
+      const totalBytes = total(payloadIn, payloadRef);
       if (totalBytes > MAX_UPLOAD_BYTES) {
         throw new Error(
           `添付画像の合計サイズが大きすぎます(約${(totalBytes / 1_000_000).toFixed(1)}MB)。枚数を減らすか、より小さい画像を使ってください。`
@@ -285,10 +297,7 @@ export default function Home() {
 
       const res = await fetch("/api/generate", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-gemini-api-key": apiKey,
-        },
+        headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey },
         body: JSON.stringify({
           modelKey,
           aspectRatio,
@@ -309,10 +318,23 @@ export default function Home() {
       }
       const data: GenerateResponse = await res.json();
 
-      const [inputThumbs, referenceThumbs] = await Promise.all([
-        Promise.all(selectedInputs.map((x) => makeThumbnail(x.dataUrl))),
-        Promise.all(selectedRefs.map((x) => makeThumbnail(x.dataUrl))),
-      ]);
+      // 履歴（使用画像）を圧縮版スナップショットで保存
+      const usedImages: UsedImage[] = [
+        ...selectedInputs.map((x, i) => ({
+          id: x.id,
+          dataUrl: payloadIn[i],
+          mimeType: mimeFromDataUrl(payloadIn[i]),
+          name: x.name,
+          role: "input" as Role,
+        })),
+        ...selectedRefs.map((x, i) => ({
+          id: x.id,
+          dataUrl: payloadRef[i],
+          mimeType: mimeFromDataUrl(payloadRef[i]),
+          name: x.name,
+          role: "reference" as Role,
+        })),
+      ];
 
       const batch: Batch = {
         id: genId("batch_"),
@@ -323,8 +345,7 @@ export default function Home() {
         aspectRatio,
         requestedCount: count,
         prompt: promptText,
-        inputThumbs,
-        referenceThumbs,
+        usedImages,
         results: data.results,
         costUsd: data.costUsd,
         durationMs: data.durationMs,
@@ -333,26 +354,14 @@ export default function Home() {
       await db.put("batches", batch);
       setBatches((p) => [batch, ...p]);
       if (data.results.length === 0) {
-        setError(
-          "画像が返却されませんでした: " +
-            (data.errors?.join(" / ") || "理由不明")
-        );
+        setError("画像が返却されませんでした: " + (data.errors?.join(" / ") || "理由不明"));
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setGenerating(false);
     }
-  }, [
-    apiKey,
-    promptText,
-    selectedInputs,
-    selectedRefs,
-    modelKey,
-    aspectRatio,
-    count,
-    model,
-  ]);
+  }, [apiKey, promptText, selectedInputs, selectedRefs, modelKey, aspectRatio, count, model]);
 
   // --- バッチ操作 ---
   const deleteBatch = useCallback(async (id: string) => {
@@ -360,18 +369,57 @@ export default function Home() {
     setBatches((p) => p.filter((x) => x.id !== id));
   }, []);
 
+  // バッチ内容を編集部へ復元（再編集・再生成）
+  const reEdit = useCallback(
+    async (batch: Batch) => {
+      setPromptText(batch.prompt);
+      setModelKey(batch.modelKey);
+      setAspectRatio(batch.aspectRatio);
+      setCount(batch.requestedCount);
+
+      const used = getUsedImages(batch);
+      let working = pool;
+      const toAdd: ImageItem[] = [];
+      const newSel: SelEntry[] = [];
+      for (const u of used) {
+        const existing = working.find((x) => x.id === u.id);
+        if (existing) {
+          newSel.push({ id: existing.id, role: u.role });
+        } else {
+          const item: ImageItem = {
+            id: genId("img_"),
+            dataUrl: u.dataUrl,
+            mimeType: u.mimeType,
+            name: u.name,
+            origin: "generated",
+            createdAt: Date.now(),
+          };
+          toAdd.push(item);
+          working = [item, ...working];
+          newSel.push({ id: item.id, role: u.role });
+        }
+      }
+      if (toAdd.length) {
+        for (const it of toAdd) await db.put("pool", it);
+        setPool(working);
+      }
+      setSelection(newSel);
+      setError(null);
+      composerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    },
+    [pool]
+  );
+
   const downloadBatchZip = useCallback(async (batch: Batch) => {
     const zip = new JSZip();
-    const stamp = new Date(batch.createdAt)
-      .toISOString()
-      .replace(/[:.]/g, "-")
-      .slice(0, 19);
+    const stamp = new Date(batch.createdAt).toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const folder = zip.folder(`batch_${stamp}`)!;
     batch.results.forEach((r, i) => {
-      const blob = dataUrlToBlob(r.dataUrl);
-      folder.file(`image_${String(i + 1).padStart(2, "0")}.${extFromMime(r.mimeType)}`, blob);
+      folder.file(
+        `image_${String(i + 1).padStart(2, "0")}.${extFromMime(r.mimeType)}`,
+        dataUrlToBlob(r.dataUrl)
+      );
     });
-    // メタデータも同梱
     folder.file(
       "metadata.json",
       JSON.stringify(
@@ -383,6 +431,7 @@ export default function Home() {
           requestedCount: batch.requestedCount,
           returnedCount: batch.results.length,
           prompt: batch.prompt,
+          usedImages: getUsedImages(batch).map((u) => ({ name: u.name, role: u.role })),
           costUsd: batch.costUsd,
           durationMs: batch.durationMs,
           errors: batch.errors,
@@ -395,10 +444,10 @@ export default function Home() {
     downloadBlob(blob, `nanobanana_batch_${stamp}.zip`);
   }, []);
 
-  const totalCost = useMemo(
-    () => batches.reduce((s, b) => s + b.costUsd, 0),
-    [batches]
-  );
+  const totalCost = useMemo(() => batches.reduce((s, b) => s + b.costUsd, 0), [batches]);
+
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [drag, setDrag] = useState(false);
 
   return (
     <div className="mx-auto max-w-[1400px] px-4 pb-24">
@@ -407,14 +456,14 @@ export default function Home() {
         <div className="flex items-center gap-2">
           <span className="text-xl">🍌</span>
           <h1 className="text-lg font-bold">Nano Banana Lab</h1>
-          <span className="text-xs text-zinc-500">Gemini 画像生成 実験サイト</span>
+          <span className="hidden text-xs text-zinc-500 sm:inline">Gemini 画像生成 実験サイト</span>
         </div>
         <div className="flex items-center gap-4 text-xs text-zinc-400">
           <span>
-            バッチ数 <b className="text-zinc-200">{batches.length}</b>
+            バッチ <b className="text-zinc-200">{batches.length}</b>
           </span>
           <span>
-            累計コスト概算 <b className="text-amber-400">${totalCost.toFixed(3)}</b>
+            累計概算 <b className="text-amber-400">${totalCost.toFixed(3)}</b>
           </span>
           <Button
             variant={apiKey ? "ghost" : "primary"}
@@ -424,9 +473,7 @@ export default function Home() {
           >
             ⚙ APIキー
             <span
-              className={`ml-1 inline-block h-2 w-2 rounded-full ${
-                apiKey ? "bg-emerald-400" : "bg-red-400"
-              }`}
+              className={`ml-1 inline-block h-2 w-2 rounded-full ${apiKey ? "bg-emerald-400" : "bg-red-400"}`}
             />
           </Button>
         </div>
@@ -441,41 +488,64 @@ export default function Home() {
       <Lightbox
         image={lightbox}
         onClose={() => setLightbox(null)}
-        onUseAsInput={useResultAsInput}
+        onAssign={addResultToPool}
       />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
-        {/* 左: ライブラリ */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[360px_1fr]">
+        {/* 左: 画像プール + プロンプト */}
         <aside className="flex flex-col gap-4">
-          <ImageLibraryPanel
-            title="入力画像ライブラリ"
-            items={inputs}
-            selectedIds={selInputIds}
-            badgePrefix="in"
-            store="inputs"
-            active={pasteTarget === "inputs"}
-            onActivate={() => setPasteTarget("inputs")}
-            onUpload={(f) => addImagesToLibrary(f, "inputs")}
-            onToggle={(it) => toggleSelect(it, "input")}
-            onDelete={(it) => deleteImage(it, "inputs")}
-          />
-          <ImageLibraryPanel
-            title="リファレンス画像ライブラリ"
-            items={references}
-            selectedIds={selRefIds}
-            badgePrefix="ref"
-            store="references"
-            active={pasteTarget === "references"}
-            onActivate={() => setPasteTarget("references")}
-            onUpload={(f) => addImagesToLibrary(f, "references")}
-            onToggle={(it) => toggleSelect(it, "ref")}
-            onDelete={(it) => deleteImage(it, "references")}
-          />
+          <Panel
+            title="画像ライブラリ（プール）"
+            right={
+              <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => fileRef.current?.click()}>
+                ＋追加
+              </Button>
+            }
+          >
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) addImagesToPool(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <p className="mb-2 text-[11px] leading-relaxed text-zinc-500">
+              各画像の <span className="text-amber-300">入力</span> /{" "}
+              <span className="text-sky-300">参照</span> ボタンで役割を割り当て（クリックで拡大）。
+            </p>
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDrag(true);
+              }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDrag(false);
+                if (e.dataTransfer.files.length) addImagesToPool(e.dataTransfer.files);
+              }}
+              className={`rounded-lg ${drag ? "ring-2 ring-amber-400" : ""}`}
+            >
+              <PoolGrid
+                items={pool}
+                selection={selection}
+                onSetRole={setRole}
+                onDelete={deletePoolItem}
+                onEnlarge={(it) =>
+                  setLightbox({ id: it.id, dataUrl: it.dataUrl, mimeType: it.mimeType, assignable: false })
+                }
+                emptyText="ドラッグ&ドロップ / ＋追加 / ⌘V で画像を登録"
+              />
+            </div>
+          </Panel>
+
           <Panel title="プロンプトライブラリ">
             {prompts.length === 0 ? (
-              <p className="py-2 text-center text-xs text-zinc-600">
-                保存したプロンプトはありません
-              </p>
+              <p className="py-2 text-center text-xs text-zinc-600">保存したプロンプトはありません</p>
             ) : (
               <ul className="flex flex-col gap-1">
                 {prompts.map((p) => (
@@ -505,146 +575,143 @@ export default function Home() {
 
         {/* 右: コンポーザー + 結果 */}
         <main className="flex flex-col gap-4">
-          {/* コンポーザー */}
-          <Panel
-            title="生成"
-            right={
-              <span className="text-[11px] text-zinc-500">
-                プロンプトで <code className="text-amber-400">@in1</code> /{" "}
-                <code className="text-amber-400">@ref1</code> と書くと添付画像を参照できます
-              </span>
-            }
-          >
-            {/* 添付中の画像チップ */}
-            {(selectedInputs.length > 0 || selectedRefs.length > 0) && (
-              <div className="mb-3 flex flex-wrap gap-2">
-                {selectedInputs.map((it, i) => (
-                  <Chip
-                    key={it.id}
-                    label={`@in${i + 1}`}
-                    dataUrl={it.dataUrl}
-                    onInsert={() => insertToken(`@in${i + 1} `)}
-                    onRemove={() => toggleSelect(it, "input")}
-                  />
-                ))}
-                {selectedRefs.map((it, i) => (
-                  <Chip
-                    key={it.id}
-                    label={`@ref${i + 1}`}
-                    dataUrl={it.dataUrl}
-                    accent
-                    onInsert={() => insertToken(`@ref${i + 1} `)}
-                    onRemove={() => toggleSelect(it, "ref")}
-                  />
-                ))}
-              </div>
-            )}
-
-            <textarea
-              ref={promptRef}
-              value={promptText}
-              onChange={(e) => setPromptText(e.target.value)}
-              placeholder="生成したい画像の説明を入力… 例: @in1 の人物を @ref1 の画風で、夜の街を背景に描いて"
-              className="min-h-[110px] w-full resize-y rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
-            />
-
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button variant="ghost" onClick={savePrompt} disabled={!promptText.trim()}>
-                💾 プロンプトを保存
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => setPromptText("")}
-                disabled={!promptText}
-              >
-                クリア
-              </Button>
-            </div>
-
-            {/* 設定行 */}
-            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {/* モデル選択 */}
-              <div className="sm:col-span-2">
-                <Label>モデル</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  {Object.values(MODELS).map((m) => (
-                    <button
-                      key={m.key}
-                      onClick={() => setModelKey(m.key)}
-                      className={`rounded-lg border px-3 py-2 text-left transition ${
-                        modelKey === m.key
-                          ? "border-amber-400 bg-amber-400/10"
-                          : "border-zinc-700 hover:border-zinc-500"
-                      }`}
-                    >
-                      <div className="text-sm font-semibold">{m.label}</div>
-                      <div className="mt-0.5 text-[11px] leading-tight text-zinc-400">
-                        {m.description}
-                      </div>
-                      <div className="mt-1 text-[11px] text-amber-400">
-                        ≈ ${m.pricePerImage.toFixed(3)} / 枚
-                      </div>
-                    </button>
+          <div ref={composerRef}>
+            <Panel
+              title="生成"
+              right={
+                <span className="hidden text-[11px] text-zinc-500 sm:inline">
+                  プロンプトで <code className="text-amber-400">@in1</code> /{" "}
+                  <code className="text-sky-400">@ref1</code> で添付画像を参照
+                </span>
+              }
+            >
+              {(selectedInputs.length > 0 || selectedRefs.length > 0) && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {selectedInputs.map((it, i) => (
+                    <Chip
+                      key={it.id}
+                      label={`@in${i + 1}`}
+                      dataUrl={it.dataUrl}
+                      onInsert={() => insertToken(`@in${i + 1} `)}
+                      onRemove={() => removeFromSelection(it.id)}
+                    />
                   ))}
-                </div>
-              </div>
-
-              <div>
-                <Label>アスペクト比</Label>
-                <select
-                  value={aspectRatio}
-                  onChange={(e) => setAspectRatio(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
-                >
-                  {model.aspectRatios.map((ar) => (
-                    <option key={ar} value={ar}>
-                      {ar}
-                    </option>
+                  {selectedRefs.map((it, i) => (
+                    <Chip
+                      key={it.id}
+                      label={`@ref${i + 1}`}
+                      dataUrl={it.dataUrl}
+                      accent
+                      onInsert={() => insertToken(`@ref${i + 1} `)}
+                      onRemove={() => removeFromSelection(it.id)}
+                    />
                   ))}
-                </select>
-              </div>
-
-              <div>
-                <Label>出力枚数: {count}</Label>
-                <input
-                  type="range"
-                  min={1}
-                  max={8}
-                  value={count}
-                  onChange={(e) => setCount(Number(e.target.value))}
-                  className="w-full accent-amber-400"
-                />
-              </div>
-            </div>
-
-            {/* 実行ボタン + 概算 */}
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <Button
-                variant="primary"
-                onClick={generate}
-                disabled={generating}
-                className="px-5 py-2 text-base"
-              >
-                {generating ? "生成中…" : "✨ 生成する"}
-              </Button>
-              <div className="text-xs text-zinc-400">
-                概算コスト{" "}
-                <b className="text-amber-400">${estCost}</b>
-                <span className="text-zinc-600"> （{count}枚 × ${model.pricePerImage.toFixed(3)}）</span>
-              </div>
-              {generating && (
-                <div className="text-xs text-zinc-400">
-                  経過 <b className="tabular-nums text-zinc-200">{(elapsed / 1000).toFixed(1)}s</b>
                 </div>
               )}
-            </div>
 
-            {error && (
-              <p className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                {error}
-              </p>
-            )}
-          </Panel>
+              <textarea
+                ref={promptRef}
+                value={promptText}
+                onChange={(e) => setPromptText(e.target.value)}
+                placeholder="生成したい画像の説明を入力… 例: @in1 の人物を @ref1 の画風で、夜の街を背景に描いて"
+                className="min-h-[110px] w-full resize-y rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+              />
+
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Button variant="ghost" onClick={savePrompt} disabled={!promptText.trim()}>
+                  💾 プロンプトを保存
+                </Button>
+                <Button variant="ghost" onClick={() => setPromptText("")} disabled={!promptText}>
+                  クリア
+                </Button>
+                {selection.length > 0 && (
+                  <Button variant="ghost" onClick={() => setSelection([])}>
+                    画像選択をクリア
+                  </Button>
+                )}
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <Label>モデル</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {Object.values(MODELS).map((m) => (
+                      <button
+                        key={m.key}
+                        onClick={() => setModelKey(m.key)}
+                        className={`rounded-lg border px-3 py-2 text-left transition ${
+                          modelKey === m.key
+                            ? "border-amber-400 bg-amber-400/10"
+                            : "border-zinc-700 hover:border-zinc-500"
+                        }`}
+                      >
+                        <div className="text-sm font-semibold">{m.label}</div>
+                        <div className="mt-0.5 text-[11px] leading-tight text-zinc-400">
+                          {m.description}
+                        </div>
+                        <div className="mt-1 text-[11px] text-amber-400">
+                          ≈ ${m.pricePerImage.toFixed(3)} / 枚
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <Label>アスペクト比</Label>
+                  <select
+                    value={aspectRatio}
+                    onChange={(e) => setAspectRatio(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+                  >
+                    {model.aspectRatios.map((ar) => (
+                      <option key={ar} value={ar}>
+                        {ar}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <Label>出力枚数: {count}</Label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={8}
+                    value={count}
+                    onChange={(e) => setCount(Number(e.target.value))}
+                    className="w-full accent-amber-400"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <Button
+                  variant="primary"
+                  onClick={generate}
+                  disabled={generating}
+                  className="px-5 py-2 text-base"
+                >
+                  {generating ? "生成中…" : "✨ 生成する"}
+                </Button>
+                <div className="text-xs text-zinc-400">
+                  概算コスト <b className="text-amber-400">${estCost}</b>
+                  <span className="text-zinc-600"> （{count}枚 × ${model.pricePerImage.toFixed(3)}）</span>
+                </div>
+                {generating && (
+                  <div className="text-xs text-zinc-400">
+                    経過 <b className="tabular-nums text-zinc-200">{(elapsed / 1000).toFixed(1)}s</b>
+                  </div>
+                )}
+              </div>
+
+              {error && (
+                <p className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                  {error}
+                </p>
+              )}
+            </Panel>
+          </div>
 
           {/* 結果一覧 */}
           <div className="flex flex-col gap-4">
@@ -657,8 +724,9 @@ export default function Home() {
               <BatchCard
                 key={batch.id}
                 batch={batch}
-                onUseAsInput={useResultAsInput}
+                onAddToPool={addResultToPool}
                 onOpenImage={setLightbox}
+                onReEdit={() => reEdit(batch)}
                 onDownloadZip={() => downloadBatchZip(batch)}
                 onDelete={() => deleteBatch(batch.id)}
               />
@@ -671,11 +739,7 @@ export default function Home() {
 }
 
 function Label({ children }: { children: React.ReactNode }) {
-  return (
-    <label className="mb-1 block text-xs font-medium text-zinc-400">
-      {children}
-    </label>
-  );
+  return <label className="mb-1 block text-xs font-medium text-zinc-400">{children}</label>;
 }
 
 function Chip({
@@ -709,109 +773,28 @@ function Chip({
   );
 }
 
-function ImageLibraryPanel({
-  title,
-  items,
-  selectedIds,
-  badgePrefix,
-  store,
-  active,
-  onActivate,
-  onUpload,
-  onToggle,
-  onDelete,
-}: {
-  title: string;
-  items: ImageItem[];
-  selectedIds: string[];
-  badgePrefix: string;
-  store: "inputs" | "references";
-  active: boolean;
-  onActivate: () => void;
-  onUpload: (files: FileList) => void;
-  onToggle: (item: ImageItem) => void;
-  onDelete: (item: ImageItem) => void;
-}) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [drag, setDrag] = useState(false);
-  return (
-    <Panel
-      title={
-        <span className="flex items-center gap-2">
-          {title}
-          {active && (
-            <span className="rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">
-              ⌘V対象
-            </span>
-          )}
-        </span>
-      }
-      className={active ? "ring-1 ring-amber-400/50" : ""}
-      right={
-        <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => fileRef.current?.click()}>
-          ＋追加
-        </Button>
-      }
-    >
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        multiple
-        className="hidden"
-        onChange={(e) => {
-          if (e.target.files) onUpload(e.target.files);
-          e.target.value = "";
-        }}
-      />
-      <div
-        tabIndex={0}
-        onClick={onActivate}
-        onFocus={onActivate}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDrag(true);
-        }}
-        onDragLeave={() => setDrag(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDrag(false);
-          onActivate();
-          if (e.dataTransfer.files.length) onUpload(e.dataTransfer.files);
-        }}
-        className={`rounded-lg outline-none ${drag ? "ring-2 ring-amber-400" : ""}`}
-      >
-        <LibraryGrid
-          items={items}
-          selectedIds={selectedIds}
-          badgePrefix={badgePrefix}
-          onToggle={onToggle}
-          onDelete={onDelete}
-          emptyText="ドラッグ&ドロップ / ＋追加 / クリックして ⌘V で貼り付け"
-        />
-        <p className="mt-2 text-center text-[10px] text-zinc-600">
-          このパネルをクリックして <kbd className="rounded bg-zinc-800 px-1">⌘V</kbd> でクリップボードの画像を貼り付け
-        </p>
-      </div>
-    </Panel>
-  );
-}
-
 function BatchCard({
   batch,
-  onUseAsInput,
+  onAddToPool,
   onOpenImage,
+  onReEdit,
   onDownloadZip,
   onDelete,
 }: {
   batch: Batch;
-  onUseAsInput: (dataUrl: string, mimeType: string) => void;
-  onOpenImage: (img: { id: string; dataUrl: string; mimeType: string }) => void;
+  onAddToPool: (dataUrl: string, mimeType: string, role: Role) => void;
+  onOpenImage: (img: LightboxImage) => void;
+  onReEdit: () => void;
   onDownloadZip: () => void;
   onDelete: () => void;
 }) {
+  const used = getUsedImages(batch);
+  const usedInputs = used.filter((u) => u.role === "input");
+  const usedRefs = used.filter((u) => u.role === "reference");
+
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/40">
+      {/* メタ情報 */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-zinc-800 px-4 py-2.5 text-xs">
         <span className="font-semibold text-zinc-200">{batch.modelLabel}</span>
         <span className="text-zinc-500">{batch.aspectRatio}</span>
@@ -820,10 +803,11 @@ function BatchCard({
         </span>
         <span className="text-amber-400">${batch.costUsd.toFixed(3)}</span>
         <span className="text-zinc-400">⏱ {(batch.durationMs / 1000).toFixed(1)}s</span>
-        <span className="text-zinc-600">
-          {new Date(batch.createdAt).toLocaleString("ja-JP")}
-        </span>
+        <span className="text-zinc-600">{new Date(batch.createdAt).toLocaleString("ja-JP")}</span>
         <div className="ml-auto flex items-center gap-1">
+          <Button variant="primary" className="px-2 py-1 text-xs" onClick={onReEdit} title="この内容を編集部へ読み込み">
+            ↑ 再編集
+          </Button>
           <Button
             variant="ghost"
             className="px-2 py-1 text-xs"
@@ -838,11 +822,27 @@ function BatchCard({
         </div>
       </div>
 
-      {batch.prompt && (
-        <p className="border-b border-zinc-800/60 px-4 py-2 text-xs text-zinc-400">
-          {batch.prompt}
-        </p>
-      )}
+      {/* 履歴: 使用した画像 + プロンプト */}
+      <div className="space-y-2 border-b border-zinc-800/60 px-4 py-3 text-xs">
+        {(usedInputs.length > 0 || usedRefs.length > 0) && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            {usedInputs.length > 0 && (
+              <HistoryThumbs label="入力" accent="amber" prefix="in" images={usedInputs} onOpenImage={onOpenImage} />
+            )}
+            {usedRefs.length > 0 && (
+              <HistoryThumbs label="参照" accent="sky" prefix="ref" images={usedRefs} onOpenImage={onOpenImage} />
+            )}
+          </div>
+        )}
+        {batch.prompt ? (
+          <p className="whitespace-pre-wrap text-zinc-300">
+            <span className="text-zinc-500">プロンプト: </span>
+            {batch.prompt}
+          </p>
+        ) : (
+          <p className="text-zinc-600">プロンプトなし（画像のみ）</p>
+        )}
+      </div>
 
       {batch.errors.length > 0 && (
         <p className="border-b border-zinc-800/60 bg-red-500/5 px-4 py-2 text-xs text-red-300">
@@ -850,6 +850,7 @@ function BatchCard({
         </p>
       )}
 
+      {/* 結果画像 */}
       <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 md:grid-cols-4">
         {batch.results.map((r) => (
           <div key={r.id} className="group relative overflow-hidden rounded-lg border border-zinc-800">
@@ -858,29 +859,36 @@ function BatchCard({
               src={r.dataUrl}
               alt="result"
               className="w-full cursor-zoom-in object-cover"
-              onClick={() => onOpenImage(r)}
+              onClick={() => onOpenImage({ ...r, assignable: true })}
               title="クリックで拡大表示"
             />
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex translate-y-full gap-1 bg-gradient-to-t from-black/80 to-transparent p-1.5 transition group-hover:translate-y-0 group-hover:pointer-events-auto">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex translate-y-full items-stretch gap-1 bg-gradient-to-t from-black/85 to-transparent p-1.5 transition group-hover:translate-y-0 group-hover:pointer-events-auto">
               <Button
                 variant="default"
-                className="flex-1 px-2 py-1 text-[11px]"
+                className="flex-1 px-1.5 py-1 text-[10px]"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onUseAsInput(r.dataUrl, r.mimeType);
+                  onAddToPool(r.dataUrl, r.mimeType, "input");
                 }}
               >
-                入力に使う
+                入力に
               </Button>
               <Button
                 variant="default"
-                className="px-2 py-1 text-[11px]"
+                className="flex-1 px-1.5 py-1 text-[10px]"
                 onClick={(e) => {
                   e.stopPropagation();
-                  downloadBlob(
-                    dataUrlToBlob(r.dataUrl),
-                    `${r.id}.${extFromMime(r.mimeType)}`
-                  );
+                  onAddToPool(r.dataUrl, r.mimeType, "reference");
+                }}
+              >
+                参照に
+              </Button>
+              <Button
+                variant="default"
+                className="px-1.5 py-1 text-[10px]"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  downloadBlob(dataUrlToBlob(r.dataUrl), `${r.id}.${extFromMime(r.mimeType)}`);
                 }}
               >
                 ⬇
@@ -889,6 +897,41 @@ function BatchCard({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function HistoryThumbs({
+  label,
+  accent,
+  prefix,
+  images,
+  onOpenImage,
+}: {
+  label: string;
+  accent: "amber" | "sky";
+  prefix: string;
+  images: UsedImage[];
+  onOpenImage: (img: LightboxImage) => void;
+}) {
+  const color = accent === "amber" ? "text-amber-300" : "text-sky-300";
+  const ring = accent === "amber" ? "border-amber-400/60" : "border-sky-400/60";
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={`font-semibold ${color}`}>{label}</span>
+      {images.map((u, i) => (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          key={u.id + i}
+          src={u.dataUrl}
+          alt={`${prefix}${i + 1}`}
+          title={`@${prefix}${i + 1} をクリックで拡大`}
+          onClick={() =>
+            onOpenImage({ id: `${u.id}_${i}`, dataUrl: u.dataUrl, mimeType: u.mimeType, assignable: false })
+          }
+          className={`h-10 w-10 cursor-zoom-in rounded border ${ring} object-cover`}
+        />
+      ))}
     </div>
   );
 }

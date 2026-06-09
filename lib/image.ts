@@ -82,6 +82,12 @@ export function approxBytes(dataUrl: string): number {
   return Math.floor((body.length * 3) / 4);
 }
 
+/** data URL からMIMEタイプを取り出す */
+export function mimeFromDataUrl(dataUrl: string): string {
+  const m = dataUrl.match(/^data:(.*?);/);
+  return m?.[1] || "image/png";
+}
+
 /** data URL から拡張子を推定 */
 export function extFromMime(mime: string): string {
   if (mime.includes("png")) return "png";
