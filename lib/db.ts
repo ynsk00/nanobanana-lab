@@ -2,9 +2,10 @@
 // IndexedDB に保存する。ストアごとに keyPath="id" のオブジェクトを格納。
 
 const DB_NAME = "nanobanana-lab";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 // "pool" = 統合画像ライブラリ。inputs/references は旧バージョンからの移行用に残す。
 // "assets" = 生成結果のフル解像度画像（一覧にはサムネだけ載せ、本体はここから都度ロード）。
+// "workflows" = Flowページのノードワークフロー保存。
 export const STORES = [
   "pool",
   "inputs",
@@ -12,6 +13,7 @@ export const STORES = [
   "prompts",
   "batches",
   "assets",
+  "workflows",
 ] as const;
 export type StoreName = (typeof STORES)[number];
 
