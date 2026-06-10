@@ -34,6 +34,34 @@ function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
+/** 例外/エラーJSONを短い日本語メッセージに要約する */
+function summarizeError(raw: unknown): string {
+  let msg = raw instanceof Error ? raw.message : String(raw ?? "不明なエラー");
+  try {
+    const start = msg.indexOf("{");
+    if (start >= 0) {
+      const obj = JSON.parse(msg.slice(start)) as {
+        error?: { code?: number; status?: string; message?: string };
+      };
+      const err = obj.error;
+      if (err) {
+        if (err.code === 429 || err.status === "RESOURCE_EXHAUSTED") {
+          return "クォータ超過 (429): APIの利用上限に達しました。時間をおくか、課金プラン/別モデル(GPT Image等)をお試しください。";
+        }
+        const m = (err.message || "").split("\n")[0];
+        return `${err.code ? `[${err.code}] ` : ""}${m}`.slice(0, 200);
+      }
+    }
+  } catch {
+    /* JSONでなければそのまま */
+  }
+  msg = msg.split("\n")[0];
+  if (/RESOURCE_EXHAUSTED|quota|rate.?limit|429/i.test(msg)) {
+    return "クォータ/レート上限に達しました。時間をおくか、別モデルをお試しください。";
+  }
+  return msg.slice(0, 200);
+}
+
 export async function POST(req: NextRequest) {
   let body: GenerateRequest;
   try {
@@ -139,7 +167,7 @@ async function handleGoogle(model: ModelDef, apiKey: string, args: HandlerArgs) 
   const errors: string[] = [];
   for (const s of settled) {
     if (s.status === "rejected") {
-      errors.push(String(s.reason?.message ?? s.reason ?? "不明なエラー"));
+      errors.push(summarizeError(s.reason));
       continue;
     }
     const candidate = s.value.candidates?.[0];

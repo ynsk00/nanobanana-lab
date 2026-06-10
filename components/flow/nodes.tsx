@@ -52,15 +52,25 @@ function NodeShell({
   );
 }
 
-function HandleLabel({ text, top, side }: { text: string; top: number; side: "left" | "right" }) {
+/** ノード左外側に置くハンドルのラベル */
+function HandleLabel({ text, top }: { text: string; top: number }) {
   return (
     <span
-      className="pointer-events-none absolute text-[9px] text-zinc-500"
-      style={{ top: top - 6, [side]: 10 } as React.CSSProperties}
+      className="pointer-events-none absolute w-9 -translate-x-full pr-1.5 text-right text-[9px] text-zinc-500"
+      style={{ top: top - 6, left: 0 }}
     >
       {text}
     </span>
   );
+}
+
+const HANDLE_COLOR: Record<string, string> = {
+  image: "#34d399",
+  reference: "#38bdf8",
+  text: "#a78bfa",
+};
+function hStyle(type: "image" | "reference" | "text", top: number): React.CSSProperties {
+  return { top, width: 9, height: 9, background: HANDLE_COLOR[type], border: "1px solid #0b0b0f" };
 }
 
 // ---------- 入力 ----------
@@ -87,7 +97,7 @@ export function InputNode({ id, data }: NodeProps<Node<InputNodeData>>) {
       <button onClick={pick} className="nodrag w-full rounded bg-zinc-800 py-1 text-xs hover:bg-zinc-700">
         {data.thumbUrl ? "変更" : "ライブラリから選択"}
       </button>
-      <Handle type="source" position={Position.Right} id="image" style={{ top: 26 }} />
+      <Handle type="source" position={Position.Right} id="image" style={hStyle("image", 26)} />
     </NodeShell>
   );
 }
@@ -109,7 +119,7 @@ export function PromptNode({ id, data }: NodeProps<Node<PromptNodeData>>) {
       {data.lastResolved && (
         <p className="mt-1 rounded bg-zinc-800/60 px-1.5 py-1 text-[10px] text-zinc-300">→ {data.lastResolved}</p>
       )}
-      <Handle type="source" position={Position.Right} id="text" style={{ top: 26 }} />
+      <Handle type="source" position={Position.Right} id="text" style={hStyle("text", 26)} />
     </NodeShell>
   );
 }
@@ -187,7 +197,7 @@ export function ReferenceNode({ id, data }: NodeProps<Node<ReferenceNodeData>>) 
           枚
         </label>
       </div>
-      <Handle type="source" position={Position.Right} id="reference" style={{ top: 26 }} />
+      <Handle type="source" position={Position.Right} id="reference" style={hStyle("reference", 26)} />
     </NodeShell>
   );
 }
@@ -206,12 +216,12 @@ export function GenerateNode({ id, data }: NodeProps<Node<GenerateNodeData>>) {
 
   return (
     <NodeShell title="④ 生成" color={COLORS.generate} onDelete={() => deleteElements({ nodes: [{ id }] })}>
-      <HandleLabel text="入力" top={30} side="left" />
-      <Handle type="target" position={Position.Left} id="image" style={{ top: 30 }} />
-      <HandleLabel text="参照" top={58} side="left" />
-      <Handle type="target" position={Position.Left} id="reference" style={{ top: 58 }} />
-      <HandleLabel text="文" top={86} side="left" />
-      <Handle type="target" position={Position.Left} id="text" style={{ top: 86 }} />
+      <HandleLabel text="入力" top={32} />
+      <Handle type="target" position={Position.Left} id="image" style={hStyle("image", 32)} />
+      <HandleLabel text="参照" top={62} />
+      <Handle type="target" position={Position.Left} id="reference" style={hStyle("reference", 62)} />
+      <HandleLabel text="文" top={92} />
+      <Handle type="target" position={Position.Left} id="text" style={hStyle("text", 92)} />
 
       <input
         value={data.label}
@@ -264,7 +274,9 @@ export function GenerateNode({ id, data }: NodeProps<Node<GenerateNodeData>>) {
         <p className="mt-1 animate-pulse text-[11px] text-emerald-300">生成中…</p>
       )}
       {data.status === "error" && (
-        <p className="mt-1 rounded bg-red-500/10 px-1.5 py-1 text-[10px] text-red-300">⚠ {data.error}</p>
+        <div className="nowheel mt-1 max-h-20 overflow-y-auto whitespace-pre-wrap break-words rounded bg-red-500/10 px-1.5 py-1 text-[10px] leading-snug text-red-300">
+          ⚠ {data.error}
+        </div>
       )}
       {data.results && data.results.length > 0 && (
         <>
@@ -285,7 +297,7 @@ export function GenerateNode({ id, data }: NodeProps<Node<GenerateNodeData>>) {
           </p>
         </>
       )}
-      <Handle type="source" position={Position.Right} id="image" style={{ top: 30 }} />
+      <Handle type="source" position={Position.Right} id="image" style={hStyle("image", 32)} />
     </NodeShell>
   );
 }
@@ -300,8 +312,8 @@ export function OutputNode({
   const results = data.results || [];
   return (
     <NodeShell title="⑤ 出力" color={COLORS.output} onDelete={() => deleteElements({ nodes: [{ id }] })}>
-      <HandleLabel text="画像" top={30} side="left" />
-      <Handle type="target" position={Position.Left} id="image" style={{ top: 30 }} />
+      <HandleLabel text="画像" top={32} />
+      <Handle type="target" position={Position.Left} id="image" style={hStyle("image", 32)} />
       {results.length === 0 ? (
         <p className="py-3 text-center text-[11px] text-zinc-600">生成ノードを接続して実行</p>
       ) : (

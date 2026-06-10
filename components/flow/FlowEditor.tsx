@@ -338,9 +338,9 @@ function Editor() {
         </header>
 
         {msg && (
-          <div className="border-b border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs text-amber-200">
-            {msg}
-            <button className="ml-2 text-zinc-500 hover:text-zinc-200" onClick={() => setMsg(null)}>×</button>
+          <div className="flex items-start gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs text-amber-200">
+            <span className="max-h-16 flex-1 overflow-y-auto whitespace-pre-wrap break-words">{msg}</span>
+            <button className="shrink-0 text-zinc-500 hover:text-zinc-200" onClick={() => setMsg(null)}>×</button>
           </div>
         )}
 
