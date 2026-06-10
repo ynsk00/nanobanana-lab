@@ -21,7 +21,8 @@ export interface WorkflowExport {
 function sanitizeNodes(nodes: Node<FlowNodeData>[]): Node<FlowNodeData>[] {
   return nodes.map((n) => {
     const data = { ...n.data } as FlowNodeData & Record<string, unknown>;
-    if (data.kind === "generate") {
+    if (data.kind === "generate" || data.kind === "cgenerate") {
+      // 実行時フィールドは落とす。制御パラメータと usedSeed は再現用に残す。
       delete (data as Partial<GenerateNodeData>).results;
       delete (data as Partial<GenerateNodeData>).status;
       delete (data as Partial<GenerateNodeData>).error;
@@ -90,6 +91,45 @@ export function buildMarkdownSpec(
     if (d.promptOverride) lines.push(`- 固定プロンプト: ${d.promptOverride}`);
     lines.push(`- 入力: ${ups.length ? ups.join(", ") : "(なし)"}`);
   });
+
+  const cgens = nodes.filter((n) => n.data.kind === "cgenerate");
+  if (cgens.length) {
+    lines.push("");
+    lines.push(`## 制御生成ステージ (${cgens.length})`);
+    cgens.forEach((n, i) => {
+      const d = n.data as {
+        label: string;
+        modelKey: string;
+        aspectRatio: string;
+        count: number;
+        controlType: string;
+        identityStrength: number;
+        controlStrength: number;
+        styleStrength: number;
+        steps: number;
+        fixedSeed: boolean;
+        seed: number | null;
+        usedSeed?: number;
+        promptOverride?: string;
+      };
+      const m = getModel(d.modelKey);
+      const ups = edges
+        .filter((e) => e.target === n.id)
+        .map((e) => {
+          const s = byId.get(e.source);
+          return s ? `${s.data.label || s.data.kind}(${e.targetHandle || "image"})` : e.source;
+        });
+      lines.push("");
+      lines.push(`### ${i + 1}. ${d.label}`);
+      lines.push(`- モデル: ${m.label} / 比率: ${d.aspectRatio} / 枚数: ${d.count} / 制御: ${d.controlType}`);
+      lines.push(
+        `- 強度 同一性:${d.identityStrength} 姿勢:${d.controlStrength} 画風:${d.styleStrength} / steps:${d.steps}`
+      );
+      lines.push(`- seed: ${d.fixedSeed ? `固定 ${d.seed}` : `ランダム（直近 ${d.usedSeed ?? "—"}）`}`);
+      if (d.promptOverride) lines.push(`- 固定プロンプト: ${d.promptOverride}`);
+      lines.push(`- 入力: ${ups.length ? ups.join(", ") : "(なし)"}`);
+    });
+  }
 
   const prompts = nodes.filter((n) => n.data.kind === "prompt");
   if (prompts.length) {

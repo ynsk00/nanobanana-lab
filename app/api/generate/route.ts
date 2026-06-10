@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
-import { getModel, openaiSizeForAspect, type ModelDef } from "@/lib/pricing";
+import {
+  getModel,
+  openaiSizeForAspect,
+  replicateSizeForAspect,
+  type ModelDef,
+} from "@/lib/pricing";
+import type { ControlParams } from "@/lib/generation";
 import type { GenerateResponse, ResultImage } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -13,6 +19,7 @@ interface GenerateRequest {
   prompt: string;
   inputImages: string[]; // data URLs
   referenceImages: string[]; // data URLs
+  controls?: ControlParams;
 }
 
 /** data URL を Gemini の inlineData パートに変換 */
@@ -70,15 +77,30 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "不正なリクエストです。" }, { status: 400 });
   }
 
-  const { modelKey, aspectRatio, prompt, inputImages = [], referenceImages = [] } = body;
+  const { modelKey, aspectRatio, prompt, inputImages = [], referenceImages = [], controls } = body;
   const count = Math.min(Math.max(1, Number(body.count) || 1), 8);
   const model = getModel(modelKey);
+  const hasControlImage = !!(controls?.identityImage || controls?.controlImage || controls?.styleImage);
 
-  if (!prompt?.trim() && inputImages.length === 0) {
+  if (!prompt?.trim() && inputImages.length === 0 && !hasControlImage) {
     return NextResponse.json(
       { error: "プロンプトまたは入力画像が必要です。" },
       { status: 400 }
     );
+  }
+
+  const args: HandlerArgs = { aspectRatio, count, prompt, inputImages, referenceImages, controls };
+
+  if (model.provider === "replicate") {
+    const apiKey =
+      req.headers.get("x-replicate-api-key")?.trim() || process.env.REPLICATE_API_TOKEN;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "Replicate APIキーが設定されていません。右上の「⚙ APIキー」から設定してください。" },
+        { status: 401 }
+      );
+    }
+    return handleReplicate(model, apiKey, args);
   }
 
   if (model.provider === "openai") {
@@ -90,7 +112,7 @@ export async function POST(req: NextRequest) {
         { status: 401 }
       );
     }
-    return handleOpenAI(model, apiKey, { aspectRatio, count, prompt, inputImages, referenceImages });
+    return handleOpenAI(model, apiKey, args);
   }
 
   const apiKey =
@@ -101,7 +123,7 @@ export async function POST(req: NextRequest) {
       { status: 401 }
     );
   }
-  return handleGoogle(model, apiKey, { aspectRatio, count, prompt, inputImages, referenceImages });
+  return handleGoogle(model, apiKey, args);
 }
 
 interface HandlerArgs {
@@ -110,6 +132,7 @@ interface HandlerArgs {
   prompt: string;
   inputImages: string[];
   referenceImages: string[];
+  controls?: ControlParams;
 }
 
 // ---------- Google (Gemini / Nano Banana) ----------
@@ -297,6 +320,158 @@ async function handleOpenAI(model: ModelDef, apiKey: string, args: HandlerArgs) 
     errors: results.length ? [] : ["画像が返却されませんでした"],
     sentInputCount,
     sentReferenceCount,
+  };
+  return NextResponse.json(payload);
+}
+
+// ---------- Replicate (InstantID 等) ----------
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, n));
+}
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** "owner/name" なら latest_version を解決。version hash ならそのまま返す */
+async function resolveReplicateVersion(idOrName: string, apiKey: string): Promise<string> {
+  if (!idOrName.includes("/")) return idOrName;
+  const res = await fetch(`https://api.replicate.com/v1/models/${idOrName}`, {
+    headers: { Authorization: `Token ${apiKey}` },
+  });
+  if (!res.ok) throw new Error(`Replicateモデル解決に失敗 (HTTP ${res.status})`);
+  const j = (await res.json()) as { latest_version?: { id?: string } };
+  const v = j?.latest_version?.id;
+  if (!v) throw new Error("Replicateモデルのバージョンが取得できませんでした");
+  return v;
+}
+
+interface ReplicatePrediction {
+  id?: string;
+  status?: string;
+  output?: unknown;
+  error?: unknown;
+}
+
+async function runReplicatePrediction(
+  version: string,
+  input: Record<string, unknown>,
+  apiKey: string
+): Promise<ReplicatePrediction> {
+  const create = await fetch("https://api.replicate.com/v1/predictions", {
+    method: "POST",
+    headers: {
+      Authorization: `Token ${apiKey}`,
+      "Content-Type": "application/json",
+      Prefer: "wait", // 最大~60s ブロックして同期的に待つ
+    },
+    body: JSON.stringify({ version, input }),
+  });
+  if (!create.ok) {
+    const j = (await create.json().catch(() => ({}))) as { detail?: string; title?: string };
+    throw new Error(j?.detail || j?.title || `Replicate予測の作成に失敗 (HTTP ${create.status})`);
+  }
+  let pred = (await create.json()) as ReplicatePrediction;
+  const deadline = Date.now() + 260_000; // maxDuration(300s)内で打ち切り
+  while (pred.status && !["succeeded", "failed", "canceled"].includes(pred.status)) {
+    if (Date.now() > deadline) throw new Error("生成がタイムアウトしました。時間をおいて再試行してください。");
+    await sleep(2000);
+    const get = await fetch(`https://api.replicate.com/v1/predictions/${pred.id}`, {
+      headers: { Authorization: `Token ${apiKey}` },
+    });
+    if (!get.ok) throw new Error(`Replicate状態取得に失敗 (HTTP ${get.status})`);
+    pred = (await get.json()) as ReplicatePrediction;
+  }
+  return pred;
+}
+
+function normalizeReplicateOutput(output: unknown): string[] {
+  if (!output) return [];
+  if (typeof output === "string") return [output];
+  if (Array.isArray(output)) return output.filter((x): x is string => typeof x === "string");
+  return [];
+}
+
+async function handleReplicate(model: ModelDef, apiKey: string, args: HandlerArgs) {
+  const { aspectRatio, count, prompt, controls } = args;
+  const c = controls || {};
+  if (!c.identityImage) {
+    return NextResponse.json(
+      {
+        error:
+          "InstantIDには同一性(顔)画像が必要です。「制御生成」ノードの identity 入力に顔画像を接続してください。",
+      },
+      { status: 400 }
+    );
+  }
+
+  const { width, height } = replicateSizeForAspect(aspectRatio);
+  const numOutputs = Math.min(Math.max(1, count), 4);
+
+  let version: string;
+  try {
+    version = process.env.REPLICATE_INSTANTID_VERSION || (await resolveReplicateVersion(model.id, apiKey));
+  } catch (e) {
+    return NextResponse.json({ error: summarizeError(e) }, { status: 502 });
+  }
+
+  const input: Record<string, unknown> = {
+    image: c.identityImage,
+    prompt: prompt?.trim() || "a portrait photo, high quality, detailed",
+    negative_prompt: "lowres, bad anatomy, worst quality, low quality, blurry, deformed",
+    width,
+    height,
+    num_outputs: numOutputs,
+    num_inference_steps: clamp(c.steps ?? 30, 1, 60),
+    guidance_scale: c.guidanceScale ?? 5,
+    ip_adapter_scale: clamp(c.identityStrength ?? 0.8, 0, 1.5),
+    controlnet_conditioning_scale: clamp(c.controlStrength ?? 0.8, 0, 1.5),
+  };
+  if (typeof c.seed === "number") input.seed = c.seed;
+  if (c.controlImage) {
+    input.pose_image = c.controlImage;
+    input.enable_pose_controlnet = true;
+  }
+
+  const start = Date.now();
+  let pred: ReplicatePrediction;
+  try {
+    pred = await runReplicatePrediction(version, input, apiKey);
+  } catch (e) {
+    return NextResponse.json({ error: summarizeError(e) }, { status: 502 });
+  }
+  const durationMs = Date.now() - start;
+
+  if (pred.status !== "succeeded") {
+    const reason = pred.error ? String(pred.error) : `生成に失敗しました (${pred.status})`;
+    return NextResponse.json({ error: summarizeError(reason) }, { status: 502 });
+  }
+
+  // 出力URL → base64 data URL
+  const urls = normalizeReplicateOutput(pred.output);
+  const results: ResultImage[] = [];
+  for (const url of urls) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) continue;
+      const buf = Buffer.from(await r.arrayBuffer());
+      const mime = r.headers.get("content-type") || "image/png";
+      results.push({
+        id: genId(),
+        dataUrl: `data:${mime};base64,${buf.toString("base64")}`,
+        mimeType: mime,
+      });
+    } catch {
+      /* skip one */
+    }
+  }
+
+  const payload: GenerateResponse = {
+    results,
+    costUsd: results.length * model.pricePerImage,
+    durationMs,
+    errors: results.length ? [] : ["画像が返却されませんでした"],
+    sentInputCount: 1,
+    sentReferenceCount: (c.controlImage ? 1 : 0) + (c.styleImage ? 1 : 0),
   };
   return NextResponse.json(payload);
 }

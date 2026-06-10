@@ -2,8 +2,13 @@
 
 import type { Edge, Node } from "@xyflow/react";
 import type { ResultImage } from "@/lib/types";
-import { requestGeneration } from "@/lib/generation";
-import type { FlowNodeData, GenerateNodeData, ReferenceNodeData } from "@/lib/flow/types";
+import { requestGeneration, type ControlParams } from "@/lib/generation";
+import type {
+  ControlledGenerateNodeData,
+  FlowNodeData,
+  GenerateNodeData,
+  ReferenceNodeData,
+} from "@/lib/flow/types";
 
 /** {a|b|c} 形式の可変スロットをランダムに1つ選んで展開する */
 export function resolvePromptTemplate(template: string): string {
@@ -52,6 +57,7 @@ type FNode = Node<FlowNodeData>;
 export interface RunContext {
   geminiKey: string;
   openaiKey: string;
+  replicateKey: string;
   /** 実行結果のフル画像をassetsへ保存しサムネ化して ResultImage を返す */
   storeResults: (raw: ResultImage[]) => Promise<ResultImage[]>;
   /** ノードの data を部分更新（プレビュー・状態反映） */
@@ -102,8 +108,9 @@ export async function runWorkflow(
     return picked.map((p) => p.dataUrl);
   }
 
+  const isGen = (k?: string) => k === "generate" || k === "cgenerate";
   // 生成ノードの依存関係（画像edgeで上流に生成ノードがある場合）
-  const generateNodes = nodes.filter((n) => n.data.kind === "generate");
+  const generateNodes = nodes.filter((n) => isGen(n.data.kind));
   const incoming = (nodeId: string) => edges.filter((e) => e.target === nodeId);
 
   const done = new Set<string>();
@@ -127,7 +134,7 @@ export async function runWorkflow(
     for (const id of remaining) {
       const ups = incoming(id)
         .map((e) => e.source)
-        .filter((src) => byId.get(src)?.data.kind === "generate");
+        .filter((src) => isGen(byId.get(src)?.data.kind));
       if (ups.every((src) => done.has(src))) ready.push(byId.get(id)!);
     }
     if (ready.length === 0) {
@@ -139,14 +146,27 @@ export async function runWorkflow(
     await Promise.all(
       ready.map(async (node) => {
         remaining.delete(node.id);
+        const isControlled = node.data.kind === "cgenerate";
+        // 共有フィールド(label/modelKey/aspectRatio/count/promptOverride)へアクセス
         const d = node.data as GenerateNodeData;
         ctx.patchNode(node.id, { status: "running", error: undefined });
+
+        // edgeの先頭画像を1枚取り出すヘルパー
+        const firstImage = (srcId: string): string | undefined => {
+          const src = byId.get(srcId);
+          if (!src) return undefined;
+          if (src.data.kind === "reference") return resolveReference(src)[0];
+          if (src.data.kind === "input" && (src.data as { dataUrl?: string }).dataUrl)
+            return (src.data as { dataUrl: string }).dataUrl;
+          return (imageOut.get(srcId) || [])[0];
+        };
 
         // 入力を解決
         const inEdges = incoming(node.id);
         const inputImages: string[] = [];
         const referenceImages: string[] = [];
         let prompt = d.promptOverride || "";
+        const controls: ControlParams | undefined = isControlled ? {} : undefined;
 
         for (const e of inEdges) {
           const src = byId.get(e.source);
@@ -154,6 +174,12 @@ export async function runWorkflow(
           const handle = e.targetHandle || "image";
           if (handle === "text") {
             if (src.data.kind === "prompt") prompt = textOut.get(src.id) || prompt;
+          } else if (handle === "identity" && controls) {
+            controls.identityImage = firstImage(src.id);
+          } else if (handle === "control" && controls) {
+            controls.controlImage = firstImage(src.id);
+          } else if (handle === "style" && controls) {
+            controls.styleImage = firstImage(src.id);
           } else if (handle === "reference") {
             if (src.data.kind === "reference") referenceImages.push(...resolveReference(src));
             else if (src.data.kind === "input" && (src.data as { dataUrl?: string }).dataUrl)
@@ -166,7 +192,29 @@ export async function runWorkflow(
           }
         }
 
-        if (!prompt.trim() && inputImages.length === 0) {
+        // 制御生成: 強度・seed・stepsを controls へ
+        let usedSeed: number | undefined;
+        if (isControlled && controls) {
+          const cd = node.data as ControlledGenerateNodeData;
+          controls.controlType = cd.controlType;
+          controls.identityStrength = cd.identityStrength;
+          controls.controlStrength = cd.controlStrength;
+          controls.styleStrength = cd.styleStrength;
+          controls.steps = cd.steps;
+          usedSeed =
+            cd.fixedSeed && cd.seed != null ? cd.seed : Math.floor(Math.random() * 2_147_483_647);
+          controls.seed = usedSeed;
+          ctx.patchNode(node.id, { usedSeed });
+        }
+
+        if (isControlled) {
+          if (!controls?.identityImage) {
+            ctx.patchNode(node.id, { status: "error", error: "同一性(顔)画像を identity 入力に接続してください" });
+            errors.push(`${d.label}: 同一性画像なし`);
+            done.add(node.id);
+            return;
+          }
+        } else if (!prompt.trim() && inputImages.length === 0) {
           ctx.patchNode(node.id, {
             status: "error",
             error: "プロンプトまたは入力画像が必要です",
@@ -181,10 +229,12 @@ export async function runWorkflow(
             {
               geminiKey: ctx.geminiKey,
               openaiKey: ctx.openaiKey,
+              replicateKey: ctx.replicateKey,
               modelKey: d.modelKey,
               aspectRatio: d.aspectRatio,
               count: d.count,
               prompt,
+              controls,
             },
             inputImages,
             referenceImages
@@ -223,8 +273,8 @@ export async function runWorkflow(
     const collected: ResultImage[] = [];
     for (const e of incoming(n.id)) {
       const src = byId.get(e.source);
-      if (src?.data.kind === "generate") {
-        collected.push(...(resultsOut.get(src.id) || []));
+      if (isGen(src?.data.kind)) {
+        collected.push(...(resultsOut.get(src!.id) || []));
       }
     }
     ctx.patchNode(n.id, { results: collected });

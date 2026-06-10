@@ -2,12 +2,20 @@
 // 価格は2026年時点の公開情報を基にした概算で、実際の請求とは異なる場合があります。
 // API仕様変更に追従できるよう、モデルIDは環境変数で上書き可能。
 
-export type Provider = "google" | "openai";
+export type Provider = "google" | "openai" | "replicate";
+
+/** モデルが備える制御能力（ノードUIを駆動する） */
+export interface ModelControls {
+  identity?: boolean; // 同一性固定（顔1枚）
+  control?: boolean; // ControlNet（ポーズ等）
+  style?: boolean; // IP-Adapter（スタイル）
+  controlTypes?: string[]; // 対応するcontrol種別（pose/depth/canny/lineart など）
+}
 
 export interface ModelDef {
   key: string;
   label: string;
-  /** 実際にAPIへ渡すモデルID */
+  /** 実際にAPIへ渡すモデルID（replicateは "owner/name"） */
   id: string;
   /** どのAPIプロバイダか */
   provider: Provider;
@@ -20,6 +28,8 @@ export interface ModelDef {
   quality?: string;
   /** OpenAI用: 出力解像度ティア */
   imageSizeTier?: "1k" | "2k";
+  /** 制御生成ノードの能力記述子 */
+  controls?: ModelControls;
 }
 
 const NANO_BANANA_2_ID =
@@ -90,12 +100,39 @@ export const MODELS: Record<string, ModelDef> = {
     aspectRatios: ["1:1", "3:2", "2:3"],
     description: "OpenAI gpt-image-2 をネイティブ2K解像度で出力。高コスト。",
   },
+  "instant-id": {
+    key: "instant-id",
+    label: "InstantID（人物固定）",
+    id: process.env.REPLICATE_INSTANTID_MODEL || "zsxkib/instant-id",
+    provider: "replicate",
+    pricePerImage: 0.02,
+    aspectRatios: ["1:1", "3:4", "4:3", "2:3", "3:2"],
+    description:
+      "Replicate InstantID。顔1枚で人物の同一性を固定し、ポーズ画像で姿勢を制御 (SDXL/1024)。",
+    controls: { identity: true, control: true, style: false, controlTypes: ["pose"] },
+  },
 };
 
 export const DEFAULT_MODEL_KEY = "nano-banana-2";
 
 export function getModel(key: string): ModelDef {
   return MODELS[key] ?? MODELS[DEFAULT_MODEL_KEY];
+}
+
+/** Replicate(SDXL系)向けにアスペクト比を解像度へマッピング（8の倍数・約1Mpx） */
+export function replicateSizeForAspect(aspect: string): { width: number; height: number } {
+  switch (aspect) {
+    case "3:4":
+      return { width: 896, height: 1152 };
+    case "4:3":
+      return { width: 1152, height: 896 };
+    case "2:3":
+      return { width: 832, height: 1216 };
+    case "3:2":
+      return { width: 1216, height: 832 };
+    default:
+      return { width: 1024, height: 1024 };
+  }
 }
 
 /** OpenAI 画像モデルのサイズへアスペクト比をマッピング（解像度ティア対応） */

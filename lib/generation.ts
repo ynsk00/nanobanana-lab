@@ -49,13 +49,50 @@ export async function fitUnderLimit(
   return best; // 最小版でも超える場合はそのまま返し、呼び出し側で判定
 }
 
+/** ControlNet / IP-Adapter / 同一性 等の制御パラメータ（任意。google/openaiは無視） */
+export interface ControlParams {
+  controlType?: "pose" | "depth" | "canny" | "lineart" | "seg" | "none";
+  controlImage?: string; // data URL（ポーズ等の制御画像）
+  controlStrength?: number; // 0..1
+  identityImage?: string; // data URL（固定したい顔）
+  identityStrength?: number; // 0..1
+  styleImage?: string; // data URL（IP-Adapterスタイル参照）
+  styleStrength?: number; // 0..1
+  steps?: number;
+  seed?: number | null; // null/undefined => ランダム
+  guidanceScale?: number;
+  baseModel?: string;
+}
+
 export interface GenerateParams {
   geminiKey?: string;
   openaiKey?: string;
+  replicateKey?: string;
   modelKey: string;
   aspectRatio: string;
   count: number;
   prompt: string;
+  controls?: ControlParams;
+}
+
+/** 制御画像は検出品質を守るため強圧縮しない（下限~1280px） */
+async function fitControls(c?: ControlParams): Promise<ControlParams | undefined> {
+  if (!c) return undefined;
+  const gentle = (d?: string) => (d ? compressForUpload(d, 1280, 0.88) : Promise.resolve(d));
+  const [controlImage, identityImage, styleImage] = await Promise.all([
+    gentle(c.controlImage),
+    gentle(c.identityImage),
+    gentle(c.styleImage),
+  ]);
+  return { ...c, controlImage, identityImage, styleImage };
+}
+
+function controlsBytes(c?: ControlParams): number {
+  if (!c) return 0;
+  return [c.controlImage, c.identityImage, c.styleImage].reduce(
+    (s, d) => s + (d ? d.length : 0),
+    0
+  );
 }
 
 /**
@@ -68,8 +105,10 @@ export async function requestGeneration(
   inputDataUrls: string[],
   referenceDataUrls: string[]
 ): Promise<GenerateResponse> {
-  const fitted = await fitUnderLimit(inputDataUrls, referenceDataUrls);
-  const bodyLen = payloadLen(fitted.inputs) + payloadLen(fitted.refs);
+  const controls = await fitControls(params.controls);
+  const ctrlBytes = controlsBytes(controls);
+  const fitted = await fitUnderLimit(inputDataUrls, referenceDataUrls, MAX_UPLOAD_BYTES - ctrlBytes);
+  const bodyLen = payloadLen(fitted.inputs) + payloadLen(fitted.refs) + ctrlBytes;
   if (bodyLen > MAX_UPLOAD_BYTES) {
     throw new Error(
       `画像の合計サイズが大きすぎます(約${(bodyLen / 1_000_000).toFixed(1)}MB)。枚数を減らすか、より小さい画像を使ってください。`
@@ -78,6 +117,7 @@ export async function requestGeneration(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (params.geminiKey) headers["x-gemini-api-key"] = params.geminiKey;
   if (params.openaiKey) headers["x-openai-api-key"] = params.openaiKey;
+  if (params.replicateKey) headers["x-replicate-api-key"] = params.replicateKey;
 
   const res = await fetch("/api/generate", {
     method: "POST",
@@ -89,6 +129,7 @@ export async function requestGeneration(
       prompt: params.prompt,
       inputImages: fitted.inputs,
       referenceImages: fitted.refs,
+      controls,
     }),
   });
   if (!res.ok) {

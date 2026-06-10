@@ -59,6 +59,22 @@ function defaultData(kind: FlowNodeData["kind"]): FlowNodeData {
         count: 1,
         status: "idle",
       };
+    case "cgenerate":
+      return {
+        kind: "cgenerate",
+        label: "制御生成",
+        modelKey: "instant-id",
+        aspectRatio: "1:1",
+        count: 1,
+        controlType: "pose",
+        controlStrength: 0.8,
+        identityStrength: 0.8,
+        styleStrength: 0.6,
+        steps: 30,
+        seed: null,
+        fixedSeed: false,
+        status: "idle",
+      };
     case "output":
       return { kind: "output", label: "出力" };
   }
@@ -72,6 +88,7 @@ function Editor() {
 
   const [geminiKey, setGeminiKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
+  const [replicateKey, setReplicateKey] = useState("");
   const [keyModalOpen, setKeyModalOpen] = useState(false);
 
   const [running, setRunning] = useState(false);
@@ -86,6 +103,7 @@ function Editor() {
   useEffect(() => {
     setGeminiKey(getApiKey("gemini"));
     setOpenaiKey(getApiKey("openai"));
+    setReplicateKey(getApiKey("replicate"));
   }, []);
 
   const ctxValue = useMemo(
@@ -107,6 +125,10 @@ function Editor() {
     if (t === "image") return s === "image";
     if (t === "text") return s === "text";
     if (t === "reference") return s === "reference" || s === "image";
+    // 制御生成ノードの入力（顔/姿勢/画風は画像系を受ける）
+    if (t === "identity") return s === "image";
+    if (t === "control") return s === "image" || s === "reference";
+    if (t === "style") return s === "image" || s === "reference";
     return false;
   }, []);
 
@@ -152,21 +174,27 @@ function Editor() {
 
   const run = useCallback(async () => {
     setMsg(null);
-    if (!geminiKey && !openaiKey) {
+    if (!geminiKey && !openaiKey && !replicateKey) {
       setKeyModalOpen(true);
       setMsg("APIキーを設定してください。");
       return;
     }
     setRunning(true);
     try {
-      const res = await runWorkflow(nodes, edges, { geminiKey, openaiKey, storeResults, patchNode });
+      const res = await runWorkflow(nodes, edges, {
+        geminiKey,
+        openaiKey,
+        replicateKey,
+        storeResults,
+        patchNode,
+      });
       if (!res.ok) setMsg(res.errors.join(" / "));
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setRunning(false);
     }
-  }, [nodes, edges, geminiKey, openaiKey, storeResults, patchNode]);
+  }, [nodes, edges, geminiKey, openaiKey, replicateKey, storeResults, patchNode]);
 
   // 出力結果の集約（出力ノード優先、無ければ全生成ノード）
   const collectResults = useCallback((): ResultImage[] => {
@@ -176,7 +204,7 @@ function Editor() {
       outs.forEach((n) => acc.push(...(((n.data as { results?: ResultImage[] }).results) || [])));
     } else {
       nodes
-        .filter((n) => n.data.kind === "generate")
+        .filter((n) => n.data.kind === "generate" || n.data.kind === "cgenerate")
         .forEach((n) => acc.push(...(((n.data as { results?: ResultImage[] }).results) || [])));
     }
     return acc;
@@ -304,6 +332,7 @@ function Editor() {
           <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => addNode("prompt")}>②プロンプト</Button>
           <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => addNode("reference")}>③参照</Button>
           <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => addNode("generate")}>④生成</Button>
+          <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => addNode("cgenerate")}>⑥人物固定</Button>
           <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => addNode("output")}>⑤出力</Button>
 
           <span className="mx-1 text-zinc-700">|</span>
@@ -318,7 +347,7 @@ function Editor() {
             <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => importRef.current?.click()}>⬆読込</Button>
             <Button variant="ghost" className="px-2 py-1 text-xs" onClick={exportMarkdown} title="手順書(Markdown)">📝手順書</Button>
             <Button
-              variant={geminiKey || openaiKey ? "ghost" : "primary"}
+              variant={geminiKey || openaiKey || replicateKey ? "ghost" : "primary"}
               className="px-2 py-1 text-xs"
               onClick={() => setKeyModalOpen(true)}
             >
@@ -379,6 +408,7 @@ function Editor() {
         onSaved={() => {
           setGeminiKey(getApiKey("gemini"));
           setOpenaiKey(getApiKey("openai"));
+          setReplicateKey(getApiKey("replicate"));
         }}
       />
 

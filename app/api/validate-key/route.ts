@@ -17,22 +17,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ valid: false, error: "キーが空です。" }, { status: 400 });
   }
   try {
-    const res =
-      provider === "openai"
-        ? await fetch("https://api.openai.com/v1/models", {
-            headers: { Authorization: `Bearer ${key}` },
-          })
-        : await fetch(
-            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
-            { headers: { "x-goog-api-key": key } }
-          );
+    let res: Response;
+    if (provider === "openai") {
+      res = await fetch("https://api.openai.com/v1/models", {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+    } else if (provider === "replicate") {
+      // 無課金のアカウント情報エンドポイントで検証
+      res = await fetch("https://api.replicate.com/v1/account", {
+        headers: { Authorization: `Token ${key}` },
+      });
+    } else {
+      res = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+        { headers: { "x-goog-api-key": key } }
+      );
+    }
 
     if (res.ok) {
       return NextResponse.json({ valid: true });
     }
     const data = await res.json().catch(() => ({}));
     const message =
-      data?.error?.message || `キーが無効です (HTTP ${res.status})`;
+      data?.error?.message || data?.detail || `キーが無効です (HTTP ${res.status})`;
     return NextResponse.json({ valid: false, error: message }, { status: 200 });
   } catch (e) {
     return NextResponse.json(

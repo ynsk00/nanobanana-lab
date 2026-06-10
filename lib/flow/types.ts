@@ -2,7 +2,13 @@
 
 import type { ResultImage } from "@/lib/types";
 
-export type FlowNodeKind = "input" | "prompt" | "reference" | "generate" | "output";
+export type FlowNodeKind =
+  | "input"
+  | "prompt"
+  | "reference"
+  | "generate"
+  | "cgenerate"
+  | "output";
 
 /** 画像入力ノード: ライブラリ(プール)の画像を1枚出力 */
 export interface InputNodeData {
@@ -67,6 +73,33 @@ export interface GenerateNodeData {
   usedPrompt?: string;
 }
 
+/** 制御生成ノード: ControlNet/IP-Adapter/同一性で意図的に制御して生成 */
+export interface ControlledGenerateNodeData {
+  [key: string]: unknown;
+  kind: "cgenerate";
+  label: string;
+  modelKey: string;
+  aspectRatio: string;
+  count: number;
+  promptOverride?: string;
+  controlType: "pose" | "depth" | "canny" | "lineart" | "none";
+  controlStrength: number;
+  identityStrength: number;
+  styleStrength: number;
+  steps: number;
+  /** null/undefined => 実行時にランダム */
+  seed: number | null;
+  fixedSeed: boolean;
+  usedSeed?: number;
+  // --- 実行結果 ---
+  results?: ResultImage[];
+  status?: "idle" | "running" | "done" | "error";
+  error?: string;
+  costUsd?: number;
+  durationMs?: number;
+  usedPrompt?: string;
+}
+
 /** 出力ノード: 上流の結果を集約(コンタクトシート/Zip/ライブラリ保存) */
 export interface OutputNodeData {
   [key: string]: unknown;
@@ -80,6 +113,7 @@ export type FlowNodeData =
   | PromptNodeData
   | ReferenceNodeData
   | GenerateNodeData
+  | ControlledGenerateNodeData
   | OutputNodeData;
 
 /** 保存されるワークフロー */

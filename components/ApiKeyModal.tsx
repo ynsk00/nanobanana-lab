@@ -7,10 +7,16 @@ import {
   setApiKey,
   PROVIDER_LABELS,
   PROVIDER_DOCS,
+  PROVIDER_PLACEHOLDER,
+  KEY_PROVIDERS,
   type KeyProvider,
 } from "@/lib/settings";
 
 type Status = { type: "idle" | "checking" | "ok" | "error"; msg?: string };
+
+function makeRecord<T>(value: T): Record<KeyProvider, T> {
+  return Object.fromEntries(KEY_PROVIDERS.map((p) => [p, value])) as Record<KeyProvider, T>;
+}
 
 export function ApiKeyModal({
   open,
@@ -21,18 +27,19 @@ export function ApiKeyModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [values, setValues] = useState<Record<KeyProvider, string>>({ gemini: "", openai: "" });
-  const [show, setShow] = useState<Record<KeyProvider, boolean>>({ gemini: false, openai: false });
-  const [status, setStatus] = useState<Record<KeyProvider, Status>>({
-    gemini: { type: "idle" },
-    openai: { type: "idle" },
-  });
+  const [values, setValues] = useState<Record<KeyProvider, string>>(() => makeRecord(""));
+  const [show, setShow] = useState<Record<KeyProvider, boolean>>(() => makeRecord(false));
+  const [status, setStatus] = useState<Record<KeyProvider, Status>>(() =>
+    makeRecord<Status>({ type: "idle" })
+  );
 
   useEffect(() => {
     if (open) {
-      setValues({ gemini: getApiKey("gemini"), openai: getApiKey("openai") });
-      setStatus({ gemini: { type: "idle" }, openai: { type: "idle" } });
-      setShow({ gemini: false, openai: false });
+      setValues(
+        Object.fromEntries(KEY_PROVIDERS.map((p) => [p, getApiKey(p)])) as Record<KeyProvider, string>
+      );
+      setStatus(makeRecord<Status>({ type: "idle" }));
+      setShow(makeRecord(false));
     }
   }, [open]);
 
@@ -66,10 +73,9 @@ export function ApiKeyModal({
 
   async function handleSave() {
     // 入力されたキーはまとめて検証してから保存
-    const providers: KeyProvider[] = ["gemini", "openai"];
-    const oks = await Promise.all(providers.map((p) => validate(p)));
+    const oks = await Promise.all(KEY_PROVIDERS.map((p) => validate(p)));
     if (oks.some((ok) => !ok)) return;
-    providers.forEach((p) => setApiKey(p, values[p].trim()));
+    KEY_PROVIDERS.forEach((p) => setApiKey(p, values[p].trim()));
     onSaved();
     onClose();
   }
@@ -92,12 +98,13 @@ export function ApiKeyModal({
 
         <p className="mb-4 text-xs leading-relaxed text-zinc-400">
           使うモデルに応じてキーを設定してください。Nano Banana は <b className="text-zinc-200">Gemini</b>、
-          GPT Image は <b className="text-zinc-200">OpenAI</b> のキーが必要です。キーは
+          GPT Image は <b className="text-zinc-200">OpenAI</b>、人物固定(InstantID)は{" "}
+          <b className="text-zinc-200">Replicate</b> のキーが必要です。キーは
           <b className="text-zinc-200">このブラウザ内(localStorage)にのみ</b>保存され、サーバーには保存されません。
         </p>
 
         <div className="space-y-4">
-          {(["gemini", "openai"] as KeyProvider[]).map((provider) => {
+          {KEY_PROVIDERS.map((provider) => {
             const st = status[provider];
             return (
               <div key={provider}>
@@ -119,7 +126,7 @@ export function ApiKeyModal({
                     type={show[provider] ? "text" : "password"}
                     value={values[provider]}
                     onChange={(e) => setValues((v) => ({ ...v, [provider]: e.target.value }))}
-                    placeholder={provider === "gemini" ? "AIza..." : "sk-..."}
+                    placeholder={PROVIDER_PLACEHOLDER[provider]}
                     autoComplete="off"
                     className="flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm outline-none focus:border-amber-400/60"
                   />

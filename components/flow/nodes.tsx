@@ -5,6 +5,7 @@ import { Handle, Position, useReactFlow, type Node, type NodeProps } from "@xyfl
 import { MODELS, getModel } from "@/lib/pricing";
 import { makeThumbnail } from "@/lib/image";
 import type {
+  ControlledGenerateNodeData,
   GenerateNodeData,
   InputNodeData,
   OutputNodeData,
@@ -19,6 +20,7 @@ const COLORS = {
   prompt: "#a78bfa",
   reference: "#38bdf8",
   generate: "#34d399",
+  cgenerate: "#2dd4bf",
   output: "#fb7185",
 };
 
@@ -68,8 +70,12 @@ const HANDLE_COLOR: Record<string, string> = {
   image: "#34d399",
   reference: "#38bdf8",
   text: "#a78bfa",
+  identity: "#f43f5e",
+  control: "#f59e0b",
+  style: "#e879f9",
 };
-function hStyle(type: "image" | "reference" | "text", top: number): React.CSSProperties {
+type HandleType = "image" | "reference" | "text" | "identity" | "control" | "style";
+function hStyle(type: HandleType, top: number): React.CSSProperties {
   return { top, width: 9, height: 9, background: HANDLE_COLOR[type], border: "1px solid #0b0b0f" };
 }
 
@@ -302,6 +308,180 @@ export function GenerateNode({ id, data }: NodeProps<Node<GenerateNodeData>>) {
   );
 }
 
+// ---------- 制御生成（InstantID 等） ----------
+export function ControlledGenerateNode({ id, data }: NodeProps<Node<ControlledGenerateNodeData>>) {
+  const { updateNodeData, deleteElements } = useReactFlow();
+  const { preview } = useFlowCtx();
+  const model = getModel(data.modelKey);
+  const caps = model.controls || {};
+  // 制御能力を持つモデルのみ選択肢に
+  const controlModels = Object.values(MODELS).filter((m) => m.controls);
+
+  const onModel = (key: string) => {
+    const m = getModel(key);
+    const ar = m.aspectRatios.includes(data.aspectRatio) ? data.aspectRatio : m.aspectRatios[0];
+    updateNodeData(id, { modelKey: key, aspectRatio: ar });
+  };
+
+  return (
+    <NodeShell title="⑥ 制御生成（人物固定）" color={COLORS.cgenerate} onDelete={() => deleteElements({ nodes: [{ id }] })}>
+      <HandleLabel text="入力" top={32} />
+      <Handle type="target" position={Position.Left} id="image" style={hStyle("image", 32)} />
+      <HandleLabel text="同一性" top={58} />
+      <Handle type="target" position={Position.Left} id="identity" style={hStyle("identity", 58)} />
+      <HandleLabel text="姿勢" top={84} />
+      <Handle type="target" position={Position.Left} id="control" style={hStyle("control", 84)} />
+      <HandleLabel text="画風" top={110} />
+      <Handle type="target" position={Position.Left} id="style" style={hStyle("style", 110)} />
+      <HandleLabel text="文" top={136} />
+      <Handle type="target" position={Position.Left} id="text" style={hStyle("text", 136)} />
+
+      <input
+        value={data.label}
+        onChange={(e) => updateNodeData(id, { label: e.target.value })}
+        className="nodrag mb-1.5 w-full rounded bg-transparent text-xs font-semibold text-zinc-200 outline-none"
+      />
+      <select
+        value={data.modelKey}
+        onChange={(e) => onModel(e.target.value)}
+        className="nodrag mb-1 w-full rounded border border-zinc-700 bg-zinc-950 px-1.5 py-1 text-[11px]"
+      >
+        {controlModels.map((m) => (
+          <option key={m.key} value={m.key}>
+            {m.label}
+          </option>
+        ))}
+      </select>
+      <div className="mb-1 flex gap-1">
+        <select
+          value={data.aspectRatio}
+          onChange={(e) => updateNodeData(id, { aspectRatio: e.target.value })}
+          className="nodrag flex-1 rounded border border-zinc-700 bg-zinc-950 px-1 py-1 text-[11px]"
+        >
+          {model.aspectRatios.map((ar) => (
+            <option key={ar} value={ar}>
+              {ar}
+            </option>
+          ))}
+        </select>
+        <label className="flex items-center gap-1 text-[10px] text-zinc-400">
+          ×
+          <input
+            type="number"
+            min={1}
+            max={4}
+            value={data.count}
+            onChange={(e) => updateNodeData(id, { count: Math.min(4, Math.max(1, Number(e.target.value))) })}
+            className="nodrag w-9 rounded border border-zinc-700 bg-zinc-950 px-1 text-[11px]"
+          />
+        </label>
+      </div>
+
+      {/* 強度スライダー */}
+      {caps.identity && (
+        <Slider label="同一性" value={data.identityStrength} onChange={(v) => updateNodeData(id, { identityStrength: v })} />
+      )}
+      {caps.control && (
+        <Slider label="姿勢" value={data.controlStrength} onChange={(v) => updateNodeData(id, { controlStrength: v })} />
+      )}
+      {caps.style && (
+        <Slider label="画風" value={data.styleStrength} onChange={(v) => updateNodeData(id, { styleStrength: v })} />
+      )}
+
+      <textarea
+        value={data.promptOverride || ""}
+        onChange={(e) => updateNodeData(id, { promptOverride: e.target.value })}
+        placeholder="固定プロンプト（文入力が未接続のとき使用）"
+        className="nodrag nowheel mt-1 min-h-[40px] w-full resize-y rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] outline-none focus:border-teal-400/60"
+      />
+
+      {/* seed 行 */}
+      <div className="mt-1 flex items-center gap-1.5 text-[10px] text-zinc-400">
+        <button
+          onClick={() => updateNodeData(id, { fixedSeed: !data.fixedSeed })}
+          className={`nodrag rounded px-1.5 py-0.5 ${data.fixedSeed ? "bg-teal-400/20 text-teal-300" : "bg-zinc-800"}`}
+        >
+          {data.fixedSeed ? "seed固定" : "seedランダム"}
+        </button>
+        {data.fixedSeed ? (
+          <input
+            type="number"
+            value={data.seed ?? 0}
+            onChange={(e) => updateNodeData(id, { seed: Number(e.target.value) })}
+            className="nodrag w-20 rounded border border-zinc-700 bg-zinc-950 px-1 text-[10px]"
+          />
+        ) : (
+          <span className="text-zinc-500">{data.usedSeed != null ? `直近: ${data.usedSeed}` : "—"}</span>
+        )}
+        <label className="ml-auto flex items-center gap-1">
+          steps
+          <input
+            type="number"
+            min={1}
+            max={60}
+            value={data.steps}
+            onChange={(e) => updateNodeData(id, { steps: Math.min(60, Math.max(1, Number(e.target.value))) })}
+            className="nodrag w-10 rounded border border-zinc-700 bg-zinc-950 px-1 text-[10px]"
+          />
+        </label>
+      </div>
+
+      {data.status === "running" && <p className="mt-1 animate-pulse text-[11px] text-teal-300">生成中…</p>}
+      {data.status === "error" && (
+        <div className="nowheel mt-1 max-h-20 overflow-y-auto whitespace-pre-wrap break-words rounded bg-red-500/10 px-1.5 py-1 text-[10px] leading-snug text-red-300">
+          ⚠ {data.error}
+        </div>
+      )}
+      {data.results && data.results.length > 0 && (
+        <>
+          <div className="mt-1.5 grid grid-cols-3 gap-1">
+            {data.results.map((r) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={r.id}
+                src={r.thumbUrl || r.dataUrl}
+                alt="r"
+                onClick={() => preview(r)}
+                className="nodrag aspect-square w-full cursor-zoom-in rounded object-cover"
+              />
+            ))}
+          </div>
+          <p className="mt-1 text-[9px] text-zinc-500">
+            ${(data.costUsd ?? 0).toFixed(3)} ・ {((data.durationMs ?? 0) / 1000).toFixed(1)}s
+          </p>
+        </>
+      )}
+      <Handle type="source" position={Position.Right} id="image" style={hStyle("image", 32)} />
+    </NodeShell>
+  );
+}
+
+function Slider({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+      <span className="w-8 shrink-0">{label}</span>
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.05}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="nodrag flex-1 accent-teal-400"
+      />
+      <span className="w-7 shrink-0 text-right tabular-nums">{value.toFixed(2)}</span>
+    </div>
+  );
+}
+
 // ---------- 出力 ----------
 export function OutputNode({
   id,
@@ -340,5 +520,6 @@ export const nodeTypes = {
   prompt: PromptNode,
   reference: ReferenceNode,
   generate: GenerateNode,
+  cgenerate: ControlledGenerateNode,
   output: OutputNode,
 };
