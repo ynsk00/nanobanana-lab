@@ -5,9 +5,15 @@ import type { CameraAngle, CharacterSheet, Cut, Scene, StylePresetKey } from "./
 /** camera enum → 英語フレーズ */
 export const CAMERA_PHRASES: Record<CameraAngle, string> = {
   top_down: "top-down aerial view",
-  high_angle: "high angle shot",
+  high_angle: "high angle shot, looking down",
   eye_level: "eye level medium shot",
+  low_angle: "low angle shot, looking up",
   close_up: "close-up shot",
+  bust_shot: "bust shot, waist-up framing",
+  full_shot: "full body shot",
+  wide: "wide establishing shot",
+  over_shoulder: "over-the-shoulder shot from behind",
+  pov: "first-person POV shot",
 };
 
 export interface StylePreset {
@@ -41,12 +47,40 @@ export const STYLE_PRESETS: Record<StylePresetKey, StylePreset> = {
     suffix: "anime keyframe rough, clean line art, minimal shading, 16:9",
     description: "アニメ原画ラフ風",
   },
+  ink_manga: {
+    key: "ink_manga",
+    label: "漫画ペン画",
+    suffix:
+      "black and white manga ink drawing, screentone shading, dynamic linework, high contrast, 16:9",
+    description: "モノクロ漫画・ペン画風",
+  },
+  watercolor: {
+    key: "watercolor",
+    label: "水彩",
+    suffix:
+      "soft watercolor illustration, gentle color bleeding, paper texture, airy light, 16:9",
+    description: "やわらかい水彩イラスト",
+  },
+  flat_vector: {
+    key: "flat_vector",
+    label: "フラットイラスト",
+    suffix:
+      "flat vector illustration, bold simple shapes, limited color palette, clean composition, 16:9",
+    description: "フラットデザイン・ベクター風",
+  },
   rich_color: {
     key: "rich_color",
     label: "質感フルカラー",
     suffix:
       "high quality full color illustration, rich textures, painterly light and shadow, detailed background, cinematic composition, 16:9",
     description: "質感のあるフルカラーイラスト（仕上げ寄り）",
+  },
+  cg_3d: {
+    key: "cg_3d",
+    label: "3DCG",
+    suffix:
+      "3D CG render, soft global illumination, physically based materials, cinematic lighting, 16:9",
+    description: "3DCGレンダリング風",
   },
   cinematic_photo: {
     key: "cinematic_photo",
@@ -65,6 +99,10 @@ export const NEGATIVE_SUFFIX = "no text, no letters, no logo, no watermark";
 /** 文字混入時のリカバリ用・強調版 */
 export const NO_TEXT_EMPHASIS =
   "IMPORTANT: absolutely no text, no letters, no captions, no subtitles, no logos, no watermarks anywhere in the image";
+
+/** 高画質化プロンプトの既定値（プロジェクト単位で編集可） */
+export const DEFAULT_QUALITY_PROMPT =
+  "masterpiece, best quality, highly detailed, sharp focus, professional lighting";
 
 /**
  * キャラクターのプロンプト句を作る。
@@ -98,6 +136,8 @@ export interface BuildPromptOptions {
   styleText?: string;
   /** トーン参照画像を @refN として添付した場合のインデックス（0始まり） */
   styleRefIndex?: number | null;
+  /** 高画質化・クオリティアップのプロンプト（全カット共通） */
+  qualityText?: string;
   /** 修正指示を含めるか（再生成時） */
   includeEditNote?: boolean;
   /** 文字混入リカバリ: no text を強調する */
@@ -139,6 +179,7 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
     opts.styleText?.trim(),
     styleRef,
     STYLE_PRESETS[style].suffix,
+    opts.qualityText?.trim(),
     opts.emphasizeNoText ? NO_TEXT_EMPHASIS : NEGATIVE_SUFFIX,
   ].filter((p): p is string => !!p);
 
@@ -153,7 +194,8 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
 export function buildCharacterSheetPrompt(
   c: CharacterSheet,
   style: StylePresetKey,
-  styleText?: string
+  styleText?: string,
+  qualityText?: string
 ): string {
   const desc = c.descriptionEn?.trim() || c.descriptionJa.trim() || c.key;
   return [
@@ -161,6 +203,7 @@ export function buildCharacterSheetPrompt(
     desc,
     styleText?.trim(),
     STYLE_PRESETS[style].suffix.replace(", 16:9", ""),
+    qualityText?.trim(),
     NEGATIVE_SUFFIX,
   ]
     .filter((p): p is string => !!p)
@@ -174,7 +217,8 @@ export function buildCharacterSheetPrompt(
 export function buildStandingFromFacePrompt(
   c: CharacterSheet,
   style: StylePresetKey,
-  styleText?: string
+  styleText?: string,
+  qualityText?: string
 ): string {
   const desc = c.descriptionEn?.trim() || c.descriptionJa.trim() || "";
   return [
@@ -183,6 +227,7 @@ export function buildStandingFromFacePrompt(
     desc,
     styleText?.trim(),
     STYLE_PRESETS[style].suffix.replace(", 16:9", ""),
+    qualityText?.trim(),
     NEGATIVE_SUFFIX,
   ]
     .filter((p): p is string => !!p)

@@ -17,12 +17,25 @@ interface AssistRequest {
   scenes?: { id: string; descriptionJa: string }[];
 }
 
+const VALID_CAMERAS = [
+  "top_down",
+  "high_angle",
+  "eye_level",
+  "low_angle",
+  "close_up",
+  "bust_shot",
+  "full_shot",
+  "wide",
+  "over_shoulder",
+  "pov",
+] as const;
+
 export interface AssistCutResult {
   id: string;
   actionEn: string;
   location?: string;
   timeOfDay?: string;
-  camera?: "top_down" | "high_angle" | "eye_level" | "close_up";
+  camera?: (typeof VALID_CAMERAS)[number];
   realNames?: string[];
 }
 
@@ -74,7 +87,7 @@ export async function POST(req: NextRequest) {
    - 固有名詞・ブランド名・文字表示(テロップ等)に関する記述は除外する
    - 実在の人名は絶対に英訳文へ含めない（一般的な記述に置き換える）
    - location(場所)とtimeOfDay(時間帯)を英語で抽出する(不明なら省略)
-   - カメラ画角が読み取れる場合のみ camera を top_down / high_angle / eye_level / close_up から選ぶ
+   - カメラ画角が読み取れる場合のみ camera を次から選ぶ: top_down / high_angle / eye_level / low_angle / close_up / bust_shot / full_shot / wide / over_shoulder / pov
 2. 各シーン規定(scenes)を、シーン内の全カットの背景描写として再利用できる英語(25語以内。場所・時間帯・天候・雰囲気)に変換する
 3. 各キャラクター記述(characters)を画像生成プロンプト用の英語(20語以内)に変換する
 4. 入力テキスト全体から、実在の人物名(タレント・俳優・著名人)や実在作品・ブランド名を検出し realNames に列挙する（架空の記号的な名前 MAN_A 等や一般名詞「男」「猫」は含めない）
@@ -117,7 +130,7 @@ ${JSON.stringify(characters, null, 2)}`;
         actionEn: String(c.actionEn || "").slice(0, 400),
         location: c.location ? String(c.location).slice(0, 100) : undefined,
         timeOfDay: c.timeOfDay ? String(c.timeOfDay).slice(0, 60) : undefined,
-        camera: ["top_down", "high_angle", "eye_level", "close_up"].includes(c.camera as string)
+        camera: (VALID_CAMERAS as readonly string[]).includes(c.camera as string)
           ? (c.camera as AssistCutResult["camera"])
           : undefined,
         realNames: Array.isArray(c.realNames) ? c.realNames.map(String) : [],

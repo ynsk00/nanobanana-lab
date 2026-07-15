@@ -175,6 +175,26 @@ describe("共通スタイル設定（全カットに同一反映）", () => {
     expect(() => assertPromptSafe(prompt, BANNED)).toThrow(NameGuardError);
   });
 
+  it("高画質化プロンプト(qualityText)が全カットへ共通付与される", () => {
+    const quality = "masterpiece, best quality, highly detailed";
+    const cuts = [
+      makeCut({ id: "c1", promptEn: "a man meets a cat" }),
+      makeCut({ id: "c2", promptEn: "a man crouching" }),
+    ];
+    for (const cut of cuts) {
+      const p = buildCutPrompt({
+        cut,
+        characters: [],
+        referenceKeys: [],
+        style: "rich_color",
+        qualityText: quality,
+      });
+      expect(p).toContain(quality);
+      // no text 系サフィックスより前に入る（末尾の禁止事項は維持）
+      expect(p.indexOf(quality)).toBeLessThan(p.indexOf("no text"));
+    }
+  });
+
   it("styleText にも人名ガードが効く", () => {
     const prompt = buildCutPrompt({
       cut: makeCut({ promptEn: "a man in a suit" }),

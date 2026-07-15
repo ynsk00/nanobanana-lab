@@ -64,7 +64,7 @@ export function CutPreview({
         <h3 className="text-xs font-semibold text-zinc-300">
           カット #{index + 1}
           <span className="ml-2 text-zinc-500">
-            {cut.durationHint || "-"}／{cut.camera ? CAMERA_LABELS[cut.camera] : "人目線(自動)"}
+            {cut.durationHint || "-"}／{cut.camera ? CAMERA_LABELS[cut.camera] : "目線(自動)"}
           </span>
         </h3>
         <label className="flex items-center gap-1 text-[11px] text-zinc-400">

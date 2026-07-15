@@ -214,7 +214,7 @@ export function CutTable({
                 className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-300"
                 title="カメラ画角"
               >
-                <option value="">画角: 自動(人目線)</option>
+                <option value="">画角: 自動(目線)</option>
                 {(Object.keys(CAMERA_LABELS) as CameraAngle[]).map((k) => (
                   <option key={k} value={k}>
                     {CAMERA_LABELS[k]}
@@ -238,14 +238,14 @@ export function CutTable({
                       e.stopPropagation();
                       onToggleCharacter(cut.id, c.key);
                     }}
-                    className={`rounded-full px-2 py-0.5 font-mono text-[10px] transition ${
+                    className={`rounded-full px-2 py-0.5 text-[10px] transition ${
                       active
                         ? "bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/50"
                         : "bg-zinc-800/60 text-zinc-500 hover:text-zinc-300"
                     }`}
-                    title={`${c.displayName || c.key} をこのカットに${active ? "含めない" : "含める"}`}
+                    title={`${c.displayName || c.key} をこのカットに${active ? "含めない" : "含める"}（プロンプトには ${c.key} として渡ります）`}
                   >
-                    {c.key}
+                    {c.displayName || c.key}
                   </button>
                 );
               })}

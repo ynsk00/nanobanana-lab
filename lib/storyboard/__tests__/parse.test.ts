@@ -108,6 +108,10 @@ describe("inferCamera", () => {
     expect(inferCamera("ハイアングルから見下ろす")).toBe("high_angle");
     expect(inferCamera("猫に寄り")).toBe("close_up");
     expect(inferCamera("人目線で歩く")).toBe("eye_level");
+    expect(inferCamera("あおりで塀を見上げる")).toBe("low_angle");
+    expect(inferCamera("引きで路地の全景")).toBe("wide");
+    expect(inferCamera("男の肩越しに猫")).toBe("over_shoulder");
+    expect(inferCamera("バストアップで男")).toBe("bust_shot");
     expect(inferCamera("特に指定なし")).toBeNull();
   });
 });

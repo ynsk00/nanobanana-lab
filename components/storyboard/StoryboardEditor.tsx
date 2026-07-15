@@ -10,8 +10,7 @@ import { Button } from "@/components/ui";
 import { ApiKeyModal } from "@/components/ApiKeyModal";
 import { CutTable } from "@/components/storyboard/CutTable";
 import { CutPreview } from "@/components/storyboard/CutPreview";
-import { CharacterModal } from "@/components/storyboard/CharacterModal";
-import { StyleModal } from "@/components/storyboard/StyleModal";
+import { BottomDock } from "@/components/storyboard/BottomDock";
 import * as db from "@/lib/db";
 import { getApiKey } from "@/lib/settings";
 import { MODELS, getModel } from "@/lib/pricing";
@@ -20,8 +19,8 @@ import { downloadBlob, fileToDataUrl, genId, makeThumbnail } from "@/lib/image";
 import type { ImageAsset } from "@/lib/types";
 import { mergeWithPrevious, parseScript, splitCut } from "@/lib/storyboard/parse";
 import {
+  DEFAULT_QUALITY_PROMPT,
   DEFAULT_STYLE,
-  STYLE_PRESETS,
   buildCharacterSheetPrompt,
   buildCutPrompt,
   buildStandingFromFacePrompt,
@@ -72,6 +71,7 @@ function newProject(): StoryboardProject {
     scenes: [],
     characters: [],
     stylePreset: DEFAULT_STYLE,
+    qualityPrompt: DEFAULT_QUALITY_PROMPT,
     modelKey: SB_MODELS[0]?.key ?? "nano-banana-2",
     bannedNames: [],
     createdAt: Date.now(),
@@ -116,8 +116,6 @@ export default function StoryboardEditor() {
   const [project, setProject] = useState<StoryboardProject>(newProject);
   const [loaded, setLoaded] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [charModalOpen, setCharModalOpen] = useState(false);
-  const [styleModalOpen, setStyleModalOpen] = useState(false);
   const [styleAnalyzing, setStyleAnalyzing] = useState(false);
   const [keyModalOpen, setKeyModalOpen] = useState(false);
   const [geminiKey, setGeminiKey] = useState("");
@@ -149,6 +147,8 @@ export default function StoryboardEditor() {
             ? { ...c, status: c.resultAssetId ? "done" : "draft" }
             : c
         );
+        // 旧プロジェクトへの新フィールド補完
+        if (p.qualityPrompt === undefined) p.qualityPrompt = DEFAULT_QUALITY_PROMPT;
         setProject(p);
       }
       setLoaded(true);
@@ -374,6 +374,7 @@ export default function StoryboardEditor() {
           style: p.stylePreset,
           styleText: projectStyleText(p),
           styleRefIndex,
+          qualityText: p.qualityPrompt,
           includeEditNote: opts.useEditNote,
           emphasizeNoText: opts.emphasizeNoText,
         });
@@ -478,7 +479,12 @@ export default function StoryboardEditor() {
       setCharBusyKey(key);
       setError(null);
       try {
-        const prompt = buildCharacterSheetPrompt(c, p.stylePreset, projectStyleText(p));
+        const prompt = buildCharacterSheetPrompt(
+          c,
+          p.stylePreset,
+          projectStyleText(p),
+          p.qualityPrompt
+        );
         assertPromptSafe(prompt, p.bannedNames);
         const res = await requestGeneration(
           { geminiKey, openaiKey, modelKey: p.modelKey, aspectRatio: "2:3", count: 1, prompt },
@@ -519,7 +525,12 @@ export default function StoryboardEditor() {
       setCharBusyKey(key);
       setError(null);
       try {
-        const prompt = buildStandingFromFacePrompt(c, p.stylePreset, projectStyleText(p));
+        const prompt = buildStandingFromFacePrompt(
+          c,
+          p.stylePreset,
+          projectStyleText(p),
+          p.qualityPrompt
+        );
         assertPromptSafe(prompt, p.bannedNames);
         const res = await requestGeneration(
           { geminiKey, openaiKey, modelKey: p.modelKey, aspectRatio: "2:3", count: 1, prompt },
@@ -673,10 +684,9 @@ export default function StoryboardEditor() {
       };
     });
     setMsg(
-      "実在人名をプレースホルダーへ置換しました。キャラシートで記述文（外見の特徴）を設定してください。"
+      "実在人名をプレースホルダーへ置換しました。下のキャラシートで記述文（外見の特徴）を設定してください。"
     );
     setError(null);
-    setCharModalOpen(true);
   }, []);
 
   // --- 書き出し ---
@@ -782,17 +792,6 @@ export default function StoryboardEditor() {
           className="w-44 rounded border border-zinc-800 bg-zinc-900 px-2 py-1 text-xs"
         />
         <div className="flex-1" />
-        <Button className="text-xs" onClick={() => setCharModalOpen(true)}>
-          🎭 キャラシート ({project.characters.length})
-        </Button>
-        <Button
-          className="text-xs"
-          onClick={() => setStyleModalOpen(true)}
-          title="全カット共通のスタイル設定（プリセット・トーン参照画像）"
-        >
-          🎨 {STYLE_PRESETS[project.stylePreset].label}
-          {(project.styleImageAssetId || project.styleNotes?.trim()) ? " +" : ""}
-        </Button>
         <select
           value={project.modelKey}
           onChange={(e) => patch({ modelKey: e.target.value })}
@@ -953,63 +952,53 @@ export default function StoryboardEditor() {
         </div>
       </div>
 
-      {charModalOpen && (
-        <CharacterModal
-          characters={project.characters}
-          bannedNames={project.bannedNames}
-          busyKey={charBusyKey}
-          onClose={() => setCharModalOpen(false)}
-          onUpdate={updateCharacter}
-          onAdd={() =>
-            patch({
-              characters: [
-                ...projectRef.current.characters,
-                {
-                  key: nextKey("CHAR", projectRef.current.characters.map((c) => c.key)),
-                  displayName: "",
-                  descriptionJa: "",
-                },
-              ],
-            })
-          }
-          onDelete={(key) =>
-            setProject((prev) => ({
-              ...prev,
-              characters: prev.characters.filter((c) => c.key !== key),
-              cuts: prev.cuts.map((c) => ({
-                ...c,
-                characters: c.characters.filter((k) => k !== key),
-              })),
-              updatedAt: Date.now(),
-            }))
-          }
-          onGenerate={generateCharacter}
-          onGenerateFromFace={generateCharacterFromFace}
-          onUpload={uploadCharacter}
-          onAddBanned={(name) =>
-            patch({
-              bannedNames: Array.from(new Set([...projectRef.current.bannedNames, name])),
-            })
-          }
-          onRemoveBanned={(name) =>
-            patch({
-              bannedNames: projectRef.current.bannedNames.filter((n) => n !== name),
-            })
-          }
-        />
-      )}
-
-      {styleModalOpen && (
-        <StyleModal
-          project={project}
-          analyzing={styleAnalyzing}
-          onClose={() => setStyleModalOpen(false)}
-          onPatch={patch}
-          onUploadStyleImage={uploadStyleImage}
-          onAnalyzeStyleImage={analyzeStyleImage}
-          onClearStyleImage={clearStyleImage}
-        />
-      )}
+      {/* 下部ドック: キャラシート横並び + スタイル設定（常設・1画面で完結） */}
+      <BottomDock
+        project={project}
+        charBusyKey={charBusyKey}
+        analyzing={styleAnalyzing}
+        onPatch={patch}
+        onUpdateChar={updateCharacter}
+        onAddChar={() =>
+          patch({
+            characters: [
+              ...projectRef.current.characters,
+              {
+                key: nextKey("CHAR", projectRef.current.characters.map((c) => c.key)),
+                displayName: "",
+                descriptionJa: "",
+              },
+            ],
+          })
+        }
+        onDeleteChar={(key) =>
+          setProject((prev) => ({
+            ...prev,
+            characters: prev.characters.filter((c) => c.key !== key),
+            cuts: prev.cuts.map((c) => ({
+              ...c,
+              characters: c.characters.filter((k) => k !== key),
+            })),
+            updatedAt: Date.now(),
+          }))
+        }
+        onGenerateChar={generateCharacter}
+        onGenerateCharFromFace={generateCharacterFromFace}
+        onUploadChar={uploadCharacter}
+        onUploadStyleImage={uploadStyleImage}
+        onAnalyzeStyleImage={analyzeStyleImage}
+        onClearStyleImage={clearStyleImage}
+        onAddBanned={(name) =>
+          patch({
+            bannedNames: Array.from(new Set([...projectRef.current.bannedNames, name])),
+          })
+        }
+        onRemoveBanned={(name) =>
+          patch({
+            bannedNames: projectRef.current.bannedNames.filter((n) => n !== name),
+          })
+        }
+      />
 
       <ApiKeyModal
         open={keyModalOpen}

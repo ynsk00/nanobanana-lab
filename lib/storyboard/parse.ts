@@ -49,7 +49,13 @@ function matchDialogue(line: string): Overlay | null {
 export function inferCamera(textJa: string): CameraAngle | null {
   if (/真俯瞰/.test(textJa)) return "top_down";
   if (/ハイアングル|俯瞰|見下ろ/.test(textJa)) return "high_angle";
-  if (/寄り|アップ|クローズ/.test(textJa)) return "close_up";
+  if (/あおり|ローアングル|見上げ/.test(textJa)) return "low_angle";
+  if (/バスト/.test(textJa)) return "bust_shot";
+  if (/クローズ|どアップ|(顔|表情|手元|足元)の?アップ|寄り/.test(textJa)) return "close_up";
+  if (/引き|ワイド|ロングショット|全景/.test(textJa)) return "wide";
+  if (/肩越し|背中越し/.test(textJa)) return "over_shoulder";
+  if (/POV|主観/.test(textJa)) return "pov";
+  if (/全身/.test(textJa)) return "full_shot";
   if (/人目線|目線|アイレベル/.test(textJa)) return "eye_level";
   return null;
 }

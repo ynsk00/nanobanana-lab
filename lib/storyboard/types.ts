@@ -1,13 +1,29 @@
 // Storyboard(字コンテ→絵コンテ)機能の型定義
 
 /** カメラ画角。ト書きの語彙から自動推定し、カット表で手動修正できる */
-export type CameraAngle = "top_down" | "high_angle" | "eye_level" | "close_up";
+export type CameraAngle =
+  | "top_down"
+  | "high_angle"
+  | "eye_level"
+  | "low_angle"
+  | "close_up"
+  | "bust_shot"
+  | "full_shot"
+  | "wide"
+  | "over_shoulder"
+  | "pov";
 
 export const CAMERA_LABELS: Record<CameraAngle, string> = {
   top_down: "真俯瞰",
   high_angle: "ハイアングル",
-  eye_level: "人目線",
+  eye_level: "目線",
+  low_angle: "ローアングル",
   close_up: "寄り",
+  bust_shot: "バストアップ",
+  full_shot: "全身",
+  wide: "引き",
+  over_shoulder: "肩越し",
+  pov: "POV(主観)",
 };
 
 /**
@@ -98,7 +114,11 @@ export type StylePresetKey =
   | "pencil_rough"
   | "gray_cinematic"
   | "anime_layout"
+  | "ink_manga"
+  | "watercolor"
+  | "flat_vector"
   | "rich_color"
+  | "cg_3d"
   | "cinematic_photo";
 
 export interface StoryboardProject {
@@ -120,6 +140,8 @@ export interface StoryboardProject {
   styleImageEn?: string;
   /** トーン参照画像を参照画像として毎カットに添付するか（既定: true） */
   attachStyleImage?: boolean;
+  /** 高画質化・クオリティアップ用のプロンプト（全生成に付与。編集可） */
+  qualityPrompt?: string;
   modelKey: string;
   /**
    * 実在人名・実在IP語の辞書（プロジェクト単位）。
