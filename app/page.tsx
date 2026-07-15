@@ -641,6 +641,13 @@ export default function Home() {
           >
             🔀 Flow
           </a>
+          <a
+            href="/storyboard"
+            className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:border-amber-400/60 hover:text-amber-300"
+            title="字コンテ → 絵コンテ生成モード"
+          >
+            🎬 Storyboard
+          </a>
         </div>
         <div className="flex items-center gap-4 text-xs text-zinc-400">
           <span>
