@@ -142,6 +142,8 @@ export interface StoryboardProject {
   attachStyleImage?: boolean;
   /** 高画質化・クオリティアップ用のプロンプト（全生成に付与。編集可） */
   qualityPrompt?: string;
+  /** 避けたい要素（ネガティブ）。Geminiにはnegative_promptパラメータが無いため "avoid: ..." としてプロンプトに埋め込む */
+  negativePrompt?: string;
   modelKey: string;
   /**
    * 実在人名・実在IP語の辞書（プロジェクト単位）。

@@ -19,6 +19,7 @@ import { downloadBlob, fileToDataUrl, genId, makeThumbnail } from "@/lib/image";
 import type { ImageAsset } from "@/lib/types";
 import { mergeWithPrevious, parseScript, splitCut } from "@/lib/storyboard/parse";
 import {
+  DEFAULT_NEGATIVE_PROMPT,
   DEFAULT_QUALITY_PROMPT,
   DEFAULT_STYLE,
   buildCharacterSheetPrompt,
@@ -72,6 +73,7 @@ function newProject(): StoryboardProject {
     characters: [],
     stylePreset: DEFAULT_STYLE,
     qualityPrompt: DEFAULT_QUALITY_PROMPT,
+    negativePrompt: DEFAULT_NEGATIVE_PROMPT,
     modelKey: SB_MODELS[0]?.key ?? "nano-banana-2",
     bannedNames: [],
     createdAt: Date.now(),
@@ -149,6 +151,7 @@ export default function StoryboardEditor() {
         );
         // 旧プロジェクトへの新フィールド補完
         if (p.qualityPrompt === undefined) p.qualityPrompt = DEFAULT_QUALITY_PROMPT;
+        if (p.negativePrompt === undefined) p.negativePrompt = DEFAULT_NEGATIVE_PROMPT;
         setProject(p);
       }
       setLoaded(true);
@@ -375,6 +378,7 @@ export default function StoryboardEditor() {
           styleText: projectStyleText(p),
           styleRefIndex,
           qualityText: p.qualityPrompt,
+          negativeText: p.negativePrompt,
           includeEditNote: opts.useEditNote,
           emphasizeNoText: opts.emphasizeNoText,
         });
@@ -483,7 +487,8 @@ export default function StoryboardEditor() {
           c,
           p.stylePreset,
           projectStyleText(p),
-          p.qualityPrompt
+          p.qualityPrompt,
+          p.negativePrompt
         );
         assertPromptSafe(prompt, p.bannedNames);
         const res = await requestGeneration(
@@ -529,7 +534,8 @@ export default function StoryboardEditor() {
           c,
           p.stylePreset,
           projectStyleText(p),
-          p.qualityPrompt
+          p.qualityPrompt,
+          p.negativePrompt
         );
         assertPromptSafe(prompt, p.bannedNames);
         const res = await requestGeneration(

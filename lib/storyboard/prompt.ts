@@ -104,6 +104,10 @@ export const NO_TEXT_EMPHASIS =
 export const DEFAULT_QUALITY_PROMPT =
   "masterpiece, best quality, highly detailed, sharp focus, professional lighting";
 
+/** 避けたい要素の既定値（プロジェクト単位で編集可） */
+export const DEFAULT_NEGATIVE_PROMPT =
+  "blurry, low resolution, deformed anatomy, broken hands, extra fingers, distorted face";
+
 /**
  * キャラクターのプロンプト句を作る。
  * 表示名（実名の可能性がある）は使わず、キー + 記述文のみを使う。
@@ -138,6 +142,8 @@ export interface BuildPromptOptions {
   styleRefIndex?: number | null;
   /** 高画質化・クオリティアップのプロンプト（全カット共通） */
   qualityText?: string;
+  /** 避けたい要素。avoid: として埋め込む */
+  negativeText?: string;
   /** 修正指示を含めるか（再生成時） */
   includeEditNote?: boolean;
   /** 文字混入リカバリ: no text を強調する */
@@ -180,6 +186,7 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
     styleRef,
     STYLE_PRESETS[style].suffix,
     opts.qualityText?.trim(),
+    opts.negativeText?.trim() ? `avoid: ${opts.negativeText.trim()}` : undefined,
     opts.emphasizeNoText ? NO_TEXT_EMPHASIS : NEGATIVE_SUFFIX,
   ].filter((p): p is string => !!p);
 
@@ -195,7 +202,8 @@ export function buildCharacterSheetPrompt(
   c: CharacterSheet,
   style: StylePresetKey,
   styleText?: string,
-  qualityText?: string
+  qualityText?: string,
+  negativeText?: string
 ): string {
   const desc = c.descriptionEn?.trim() || c.descriptionJa.trim() || c.key;
   return [
@@ -204,6 +212,7 @@ export function buildCharacterSheetPrompt(
     styleText?.trim(),
     STYLE_PRESETS[style].suffix.replace(", 16:9", ""),
     qualityText?.trim(),
+    negativeText?.trim() ? `avoid: ${negativeText.trim()}` : undefined,
     NEGATIVE_SUFFIX,
   ]
     .filter((p): p is string => !!p)
@@ -218,7 +227,8 @@ export function buildStandingFromFacePrompt(
   c: CharacterSheet,
   style: StylePresetKey,
   styleText?: string,
-  qualityText?: string
+  qualityText?: string,
+  negativeText?: string
 ): string {
   const desc = c.descriptionEn?.trim() || c.descriptionJa.trim() || "";
   return [
@@ -228,6 +238,7 @@ export function buildStandingFromFacePrompt(
     styleText?.trim(),
     STYLE_PRESETS[style].suffix.replace(", 16:9", ""),
     qualityText?.trim(),
+    negativeText?.trim() ? `avoid: ${negativeText.trim()}` : undefined,
     NEGATIVE_SUFFIX,
   ]
     .filter((p): p is string => !!p)

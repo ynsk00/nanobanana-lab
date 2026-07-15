@@ -195,6 +195,18 @@ describe("共通スタイル設定（全カットに同一反映）", () => {
     }
   });
 
+  it("避けたい要素(negativeText)が avoid: として埋め込まれる", () => {
+    const p = buildCutPrompt({
+      cut: makeCut({ promptEn: "a man meets a cat" }),
+      characters: [],
+      referenceKeys: [],
+      style: "pencil_rough",
+      negativeText: "blurry, deformed hands",
+    });
+    expect(p).toContain("avoid: blurry, deformed hands");
+    expect(p.indexOf("avoid:")).toBeLessThan(p.indexOf("no text"));
+  });
+
   it("styleText にも人名ガードが効く", () => {
     const prompt = buildCutPrompt({
       cut: makeCut({ promptEn: "a man in a suit" }),
