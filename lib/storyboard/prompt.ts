@@ -18,8 +18,8 @@ export interface StylePreset {
 }
 
 /**
- * スタイルプリセット。フォトリアル系は不気味の谷・肖像権リスクのため提供しない。
- * 全プリセット共通で NEGATIVE_SUFFIX を末尾に付与する
+ * スタイルプリセット。全プリセット共通で NEGATIVE_SUFFIX を末尾に付与する。
+ * 実写風プリセットの利用時は肖像権への配慮をUI側で促す
  */
 export const STYLE_PRESETS: Record<StylePresetKey, StylePreset> = {
   pencil_rough: {
@@ -40,6 +40,20 @@ export const STYLE_PRESETS: Record<StylePresetKey, StylePreset> = {
     label: "アニメレイアウト",
     suffix: "anime keyframe rough, clean line art, minimal shading, 16:9",
     description: "アニメ原画ラフ風",
+  },
+  rich_color: {
+    key: "rich_color",
+    label: "質感フルカラー",
+    suffix:
+      "high quality full color illustration, rich textures, painterly light and shadow, detailed background, cinematic composition, 16:9",
+    description: "質感のあるフルカラーイラスト（仕上げ寄り）",
+  },
+  cinematic_photo: {
+    key: "cinematic_photo",
+    label: "シネマティック実写風",
+    suffix:
+      "photorealistic cinematic film still, natural film lighting, shallow depth of field, high detail, color graded, 16:9",
+    description: "実写映画のスチル風（肖像権に配慮して使用）",
   },
 };
 
@@ -72,6 +86,13 @@ export interface BuildPromptOptions {
   /** 参照画像として添付するキャラのキー（添付順 = @refN の順） */
   referenceKeys: string[];
   style: StylePresetKey;
+  /**
+   * プロジェクト共通のスタイル記述（自由記述 + トーン参照画像の言語化結果）。
+   * 全カットに同一の文字列を渡すことで絵のトーンを揃える
+   */
+  styleText?: string;
+  /** トーン参照画像を @refN として添付した場合のインデックス（0始まり） */
+  styleRefIndex?: number | null;
   /** 修正指示を含めるか（再生成時） */
   includeEditNote?: boolean;
   /** 文字混入リカバリ: no text を強調する */
@@ -93,6 +114,11 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
     return characterPhrase(c, refIndex >= 0 ? refIndex : null);
   });
 
+  const styleRef =
+    opts.styleRefIndex != null
+      ? `match the overall tone, color palette, texture and rendering style of @ref${opts.styleRefIndex + 1} (style reference only, do not copy its subjects)`
+      : undefined;
+
   const parts = [
     camera,
     action,
@@ -100,6 +126,8 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
     cut.location?.trim(),
     cut.timeOfDay?.trim(),
     cut.emotionHint?.trim(),
+    opts.styleText?.trim(),
+    styleRef,
     STYLE_PRESETS[style].suffix,
     opts.emphasizeNoText ? NO_TEXT_EMPHASIS : NEGATIVE_SUFFIX,
   ].filter((p): p is string => !!p);
@@ -112,12 +140,41 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
 }
 
 /** キャラシート（立ち姿基準画像）生成用プロンプト */
-export function buildCharacterSheetPrompt(c: CharacterSheet, style: StylePresetKey): string {
+export function buildCharacterSheetPrompt(
+  c: CharacterSheet,
+  style: StylePresetKey,
+  styleText?: string
+): string {
   const desc = c.descriptionEn?.trim() || c.descriptionJa.trim() || c.key;
   return [
     "character reference sheet, single character, full body standing pose, front view, neutral expression, plain white background",
     desc,
+    styleText?.trim(),
     STYLE_PRESETS[style].suffix.replace(", 16:9", ""),
     NEGATIVE_SUFFIX,
-  ].join(", ");
+  ]
+    .filter((p): p is string => !!p)
+    .join(", ");
+}
+
+/**
+ * アップロードした顔写真（@in1）から立ち姿の基準画像を作るプロンプト。
+ * 顔の同一性を保ったままプロジェクトのスタイルに変換する
+ */
+export function buildStandingFromFacePrompt(
+  c: CharacterSheet,
+  style: StylePresetKey,
+  styleText?: string
+): string {
+  const desc = c.descriptionEn?.trim() || c.descriptionJa.trim() || "";
+  return [
+    "using the person in input image @in1, draw the exact same person (same face, same hairstyle) as a character reference sheet",
+    "single character, full body standing pose, front view, neutral expression, plain white background",
+    desc,
+    styleText?.trim(),
+    STYLE_PRESETS[style].suffix.replace(", 16:9", ""),
+    NEGATIVE_SUFFIX,
+  ]
+    .filter((p): p is string => !!p)
+    .join(", ");
 }

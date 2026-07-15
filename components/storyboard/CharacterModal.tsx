@@ -17,6 +17,7 @@ export function CharacterModal({
   onAdd,
   onDelete,
   onGenerate,
+  onGenerateFromFace,
   onUpload,
   onAddBanned,
   onRemoveBanned,
@@ -30,6 +31,8 @@ export function CharacterModal({
   onAdd: () => void;
   onDelete: (key: string) => void;
   onGenerate: (key: string) => void;
+  /** アップロード済みの顔写真から同一人物の立ち姿を生成 */
+  onGenerateFromFace: (key: string) => void;
   onUpload: (key: string, file: File) => void;
   onAddBanned: (name: string) => void;
   onRemoveBanned: (name: string) => void;
@@ -54,6 +57,8 @@ export function CharacterModal({
         <p className="mb-3 text-xs text-zinc-500">
           キャラクターはプレースホルダーキー（例: MAN_A）と記述文でプロンプトへ渡されます。
           基準画像（立ち姿）を確定すると、全カット生成に参照画像として同梱されます。
+          実在人物（タレント等）を使う場合は、⬆で顔写真をアップロードしてください。
+          名前はAPIへ送らず、顔は画像参照としてのみ渡されます。
         </p>
 
         <div className="space-y-3">
@@ -105,6 +110,16 @@ export function CharacterModal({
                     }}
                   />
                 </div>
+                {c.imageAssetId && (
+                  <Button
+                    className="w-full px-1 py-0.5 text-[10px]"
+                    disabled={busyKey !== null}
+                    title="アップロードした顔写真から、同じ人物の立ち姿(正面・全身)をプロジェクトのスタイルで生成し直す"
+                    onClick={() => onGenerateFromFace(c.key)}
+                  >
+                    {busyKey === c.key ? "生成中…" : "顔→立ち姿を生成"}
+                  </Button>
+                )}
               </div>
 
               {/* 情報 */}

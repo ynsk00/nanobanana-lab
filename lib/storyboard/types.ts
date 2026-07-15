@@ -77,7 +77,12 @@ export interface CharacterSheet {
 }
 
 /** スタイルプリセットのキー */
-export type StylePresetKey = "pencil_rough" | "gray_cinematic" | "anime_layout";
+export type StylePresetKey =
+  | "pencil_rough"
+  | "gray_cinematic"
+  | "anime_layout"
+  | "rich_color"
+  | "cinematic_photo";
 
 export interface StoryboardProject {
   id: string;
@@ -87,6 +92,15 @@ export interface StoryboardProject {
   cuts: Cut[];
   characters: CharacterSheet[];
   stylePreset: StylePresetKey;
+  /** 共通スタイルの自由記述（全カットのプロンプトに追記。日本語可） */
+  styleNotes?: string;
+  /** トーン参照画像（assets ストアのキー）。全カット生成の参照に同梱できる */
+  styleImageAssetId?: string;
+  styleImageThumb?: string;
+  /** トーン参照画像を視覚モデルで言語化した英語記述（全カットに反映） */
+  styleImageEn?: string;
+  /** トーン参照画像を参照画像として毎カットに添付するか（既定: true） */
+  attachStyleImage?: boolean;
   modelKey: string;
   /**
    * 実在人名・実在IP語の辞書（プロジェクト単位）。

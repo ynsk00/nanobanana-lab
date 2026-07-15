@@ -11,6 +11,7 @@ import { ApiKeyModal } from "@/components/ApiKeyModal";
 import { CutTable } from "@/components/storyboard/CutTable";
 import { CutPreview } from "@/components/storyboard/CutPreview";
 import { CharacterModal } from "@/components/storyboard/CharacterModal";
+import { StyleModal } from "@/components/storyboard/StyleModal";
 import * as db from "@/lib/db";
 import { getApiKey } from "@/lib/settings";
 import { MODELS, getModel } from "@/lib/pricing";
@@ -28,6 +29,7 @@ import {
   STYLE_PRESETS,
   buildCharacterSheetPrompt,
   buildCutPrompt,
+  buildStandingFromFacePrompt,
 } from "@/lib/storyboard/prompt";
 import {
   NameGuardError,
@@ -38,13 +40,9 @@ import {
 import { buildStoryboardSheets, type SheetCut } from "@/lib/storyboard/sheet";
 import { composeCutPng } from "@/lib/storyboard/sheet";
 import { canvasesToPdf } from "@/lib/storyboard/pdf";
-import type {
-  CharacterSheet,
-  Cut,
-  StoryboardProject,
-  StylePresetKey,
-} from "@/lib/storyboard/types";
+import type { CharacterSheet, Cut, StoryboardProject } from "@/lib/storyboard/types";
 import type { AssistResponse } from "@/app/api/storyboard/assist/route";
+import type { StyleResponse } from "@/app/api/storyboard/style/route";
 
 const PROJECT_ID = "sb_default";
 
@@ -108,11 +106,22 @@ async function assetUrl(assetId?: string): Promise<string | null> {
   return a?.dataUrl ?? null;
 }
 
+/** プロジェクト共通のスタイル記述（言語化済みトーン + 自由記述） */
+function projectStyleText(p: StoryboardProject): string | undefined {
+  const text = [p.styleImageEn, p.styleNotes]
+    .map((s) => s?.trim())
+    .filter(Boolean)
+    .join(", ");
+  return text || undefined;
+}
+
 export default function StoryboardEditor() {
   const [project, setProject] = useState<StoryboardProject>(newProject);
   const [loaded, setLoaded] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [charModalOpen, setCharModalOpen] = useState(false);
+  const [styleModalOpen, setStyleModalOpen] = useState(false);
+  const [styleAnalyzing, setStyleAnalyzing] = useState(false);
   const [keyModalOpen, setKeyModalOpen] = useState(false);
   const [geminiKey, setGeminiKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
@@ -278,11 +287,23 @@ export default function StoryboardEditor() {
           await Promise.all(refChars.map((c) => assetUrl(c.imageAssetId)))
         ).filter((u): u is string => !!u);
 
+        // トーン参照画像を末尾の参照として同梱（@refN の N はキャラ参照の後）
+        let styleRefIndex: number | null = null;
+        if (p.attachStyleImage !== false && p.styleImageAssetId) {
+          const styleUrl = await assetUrl(p.styleImageAssetId);
+          if (styleUrl) {
+            styleRefIndex = refUrls.length;
+            refUrls.push(styleUrl);
+          }
+        }
+
         const prompt = buildCutPrompt({
           cut,
           characters: chars,
           referenceKeys: refChars.map((c) => c.key),
           style: p.stylePreset,
+          styleText: projectStyleText(p),
+          styleRefIndex,
           includeEditNote: opts.useEditNote,
           emphasizeNoText: opts.emphasizeNoText,
         });
@@ -387,7 +408,7 @@ export default function StoryboardEditor() {
       setCharBusyKey(key);
       setError(null);
       try {
-        const prompt = buildCharacterSheetPrompt(c, p.stylePreset);
+        const prompt = buildCharacterSheetPrompt(c, p.stylePreset, projectStyleText(p));
         assertPromptSafe(prompt, p.bannedNames);
         const res = await requestGeneration(
           { geminiKey, openaiKey, modelKey: p.modelKey, aspectRatio: "2:3", count: 1, prompt },
@@ -414,6 +435,100 @@ export default function StoryboardEditor() {
     },
     [geminiKey, openaiKey]
   );
+
+  /**
+   * アップロード済みの顔写真から、同一人物の立ち姿基準画像を生成する。
+   * 実在人物の顔は画像参照としてのみ渡し、名前はプロンプトに載せない
+   */
+  const generateCharacterFromFace = useCallback(
+    async (key: string) => {
+      const p = projectRef.current;
+      const c = p.characters.find((x) => x.key === key);
+      const faceUrl = await assetUrl(c?.imageAssetId);
+      if (!c || !faceUrl) return;
+      setCharBusyKey(key);
+      setError(null);
+      try {
+        const prompt = buildStandingFromFacePrompt(c, p.stylePreset, projectStyleText(p));
+        assertPromptSafe(prompt, p.bannedNames);
+        const res = await requestGeneration(
+          { geminiKey, openaiKey, modelKey: p.modelKey, aspectRatio: "2:3", count: 1, prompt },
+          [faceUrl],
+          []
+        );
+        const img = res.results.find((r) => r.dataUrl);
+        if (!img?.dataUrl) throw new Error(res.errors[0] || "画像が返却されませんでした");
+        const assetId = genId("sbchar_");
+        await db.put("assets", { id: assetId, dataUrl: img.dataUrl });
+        const thumb = await makeThumbnail(img.dataUrl, 256);
+        setProject((prev) => ({
+          ...prev,
+          characters: prev.characters.map((x) =>
+            x.key === key ? { ...x, imageAssetId: assetId, thumbUrl: thumb } : x
+          ),
+          updatedAt: Date.now(),
+        }));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "立ち姿の生成に失敗しました");
+      } finally {
+        setCharBusyKey(null);
+      }
+    },
+    [geminiKey, openaiKey]
+  );
+
+  // --- トーン参照画像（スタイル設定） ---
+  const uploadStyleImage = useCallback(async (file: File) => {
+    const dataUrl = await fileToDataUrl(file);
+    const assetId = genId("sbstyle_");
+    await db.put("assets", { id: assetId, dataUrl });
+    const thumb = await makeThumbnail(dataUrl, 256);
+    setProject((prev) => ({
+      ...prev,
+      styleImageAssetId: assetId,
+      styleImageThumb: thumb,
+      styleImageEn: undefined, // 画像が変わったら言語化結果は無効
+      updatedAt: Date.now(),
+    }));
+  }, []);
+
+  const analyzeStyleImage = useCallback(async () => {
+    const p = projectRef.current;
+    const url = await assetUrl(p.styleImageAssetId);
+    if (!url) return;
+    setStyleAnalyzing(true);
+    setError(null);
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (geminiKey) headers["x-gemini-api-key"] = geminiKey;
+      const res = await fetch("/api/storyboard/style", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ image: url }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `トーンの言語化に失敗しました (${res.status})`);
+      }
+      const data = (await res.json()) as StyleResponse;
+      setProject((prev) => ({ ...prev, styleImageEn: data.styleEn, updatedAt: Date.now() }));
+      setMsg(`トーンを言語化しました: ${data.summaryJa}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "トーンの言語化に失敗しました");
+    } finally {
+      setStyleAnalyzing(false);
+    }
+  }, [geminiKey]);
+
+  const clearStyleImage = useCallback(() => {
+    setProject((prev) => ({
+      ...prev,
+      styleImageAssetId: undefined,
+      styleImageThumb: undefined,
+      styleImageEn: undefined,
+      updatedAt: Date.now(),
+    }));
+  }, []);
 
   const uploadCharacter = useCallback(async (key: string, file: File) => {
     const dataUrl = await fileToDataUrl(file);
@@ -590,16 +705,14 @@ export default function StoryboardEditor() {
         <Button className="text-xs" onClick={() => setCharModalOpen(true)}>
           🎭 キャラシート ({project.characters.length})
         </Button>
-        <select
-          value={project.stylePreset}
-          onChange={(e) => patch({ stylePreset: e.target.value as StylePresetKey })}
-          className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs"
-          title="スタイルプリセット"
+        <Button
+          className="text-xs"
+          onClick={() => setStyleModalOpen(true)}
+          title="全カット共通のスタイル設定（プリセット・トーン参照画像）"
         >
-          {Object.values(STYLE_PRESETS).map((s) => (
-            <option key={s.key} value={s.key}>{s.label}</option>
-          ))}
-        </select>
+          🎨 {STYLE_PRESETS[project.stylePreset].label}
+          {(project.styleImageAssetId || project.styleNotes?.trim()) ? " +" : ""}
+        </Button>
         <select
           value={project.modelKey}
           onChange={(e) => patch({ modelKey: e.target.value })}
@@ -788,6 +901,7 @@ export default function StoryboardEditor() {
             }))
           }
           onGenerate={generateCharacter}
+          onGenerateFromFace={generateCharacterFromFace}
           onUpload={uploadCharacter}
           onAddBanned={(name) =>
             patch({
@@ -799,6 +913,18 @@ export default function StoryboardEditor() {
               bannedNames: projectRef.current.bannedNames.filter((n) => n !== name),
             })
           }
+        />
+      )}
+
+      {styleModalOpen && (
+        <StyleModal
+          project={project}
+          analyzing={styleAnalyzing}
+          onClose={() => setStyleModalOpen(false)}
+          onPatch={patch}
+          onUploadStyleImage={uploadStyleImage}
+          onAnalyzeStyleImage={analyzeStyleImage}
+          onClearStyleImage={clearStyleImage}
         />
       )}
 

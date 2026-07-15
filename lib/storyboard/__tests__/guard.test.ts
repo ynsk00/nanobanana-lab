@@ -98,7 +98,13 @@ describe("buildCutPrompt: 人名がプロンプトへ渡らない", () => {
 
 describe("スタイルプリセット", () => {
   it("全プリセットの末尾に no text 系サフィックスが付与される", () => {
-    for (const style of ["pencil_rough", "gray_cinematic", "anime_layout"] as const) {
+    for (const style of [
+      "pencil_rough",
+      "gray_cinematic",
+      "anime_layout",
+      "rich_color",
+      "cinematic_photo",
+    ] as const) {
       const prompt = buildCutPrompt({
         cut: makeCut({ promptEn: "a cat on a wall" }),
         characters: [],
@@ -108,5 +114,46 @@ describe("スタイルプリセット", () => {
       expect(prompt).toContain("no text, no letters, no logo, no watermark");
       expect(prompt).toContain("16:9");
     }
+  });
+});
+
+describe("共通スタイル設定（全カットに同一反映）", () => {
+  const styleText = "soft morning light, muted earthy palette, film grain";
+
+  it("styleText が全カットのプロンプトに同じ形で入る", () => {
+    const cuts = [
+      makeCut({ id: "c1", promptEn: "a man meets a cat" }),
+      makeCut({ id: "c2", promptEn: "a man crouching in an alley" }),
+    ];
+    const prompts = cuts.map((cut) =>
+      buildCutPrompt({ cut, characters: [], referenceKeys: [], style: "rich_color", styleText })
+    );
+    for (const p of prompts) expect(p).toContain(styleText);
+  });
+
+  it("トーン参照画像を添付すると @refN でスタイル参照指示が入る", () => {
+    // キャラ参照1枚 + トーン参照1枚 → トーンは @ref2
+    const prompt = buildCutPrompt({
+      cut: makeCut({ promptEn: "a man meets a cat" }),
+      characters: [MAN_A],
+      referenceKeys: ["MAN_A"],
+      style: "pencil_rough",
+      styleText,
+      styleRefIndex: 1,
+    });
+    expect(prompt).toContain("@ref1"); // キャラ参照
+    expect(prompt).toContain("rendering style of @ref2"); // トーン参照
+    expect(prompt).toContain("style reference only");
+  });
+
+  it("styleText にも人名ガードが効く", () => {
+    const prompt = buildCutPrompt({
+      cut: makeCut({ promptEn: "a man in a suit" }),
+      characters: [],
+      referenceKeys: [],
+      style: "pencil_rough",
+      styleText: "in the style of 山田太郎", // 禁止語入り
+    });
+    expect(() => assertPromptSafe(prompt, BANNED)).toThrow(NameGuardError);
   });
 });
