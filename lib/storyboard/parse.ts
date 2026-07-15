@@ -1,17 +1,21 @@
-// 字コンテ(テキスト)をカット表に分解するパーサー。
+// 字コンテ(テキスト)をカット表に分解するパーサー（記法ベース・オフライン動作）。
 // 純粋関数のみ（DOM/DB非依存）でテスト可能にする。
+// ※ 自由な書式の字コンテは /api/storyboard/parse (AI分解) が主経路。
+//   本パーサーはAPIキー未設定時・失敗時のフォールバック。
 //
 // 記法:
+//   ○見出し / 【見出し】  シーン見出し（共通のシーン規定になる）
 //   BGM:        シーン区切りのヒント（画像化しない・オーバーレイにもしない）
 //   SE:         効果音 → SE オーバーレイ
 //   T：         テロップ/プロンプトUI → PROMPT_UI オーバーレイ
 //   NA（名前）「…」 ナレーション → NA オーバーレイ（青字）
 //   話者「セリフ」   セリフ → 画像化しない。感情ヒントのみプロンプトに反映
 //   （ト書き）      画の本体。1行 = 1カット（カット表で自由に結合・分割可能）
+//   上記以外の行     括弧が無くてもト書きとして扱う（自由書式への耐性）
 //
-// 区切り: 空行 / BGM: 行 / （カット替わり）
+// 区切り: 空行 / BGM: 行 / （カット替わり） / シーン見出し
 
-import type { CameraAngle, Cut, Overlay } from "./types";
+import type { CameraAngle, Cut, Overlay, Scene } from "./types";
 
 /** 半角/全角コロンの両方を許容した行頭プレフィックス判定 */
 function stripPrefix(line: string, prefix: string): string | null {
@@ -71,8 +75,21 @@ function inferDuration(textJa: string): string {
   return m ? `${m[1]}s` : "";
 }
 
+/** シーン見出し行（○朝の路地 / 【シーン1】 / S#1 など）を解析 */
+function matchSceneHeading(line: string): string | null {
+  let m = line.match(/^[○◯●◎☆★▼▽]\s*(.+)$/);
+  if (m) return m[1].trim();
+  m = line.match(/^【(.+)】$/);
+  if (m) return m[1].trim();
+  m = line.match(/^(?:S|Scene|シーン|カット)\s*[#＃]?\s*\d+\s*[:：.．]?\s*(.*)$/i);
+  if (m) return m[1].trim() || line.trim();
+  return null;
+}
+
 export interface ParseResult {
   cuts: Cut[];
+  /** シーン見出しから作った共通のシーン規定 */
+  scenes: Scene[];
   /** NA/セリフの話者から抽出したキャラクター名候補（重複なし・出現順） */
   characterNames: string[];
 }
@@ -91,6 +108,8 @@ function speakerName(speaker: string): string {
 /**
  * 字コンテ全文をカット配列に分解する。
  * - 各（ト書き）行を 1 カットとする（8±2 カット程度の粒度。結合・分割はUI側で可能）
+ * - 括弧で囲まれていない行も、BGM/SE/T/NA/セリフでなければト書きとして扱う
+ * - ○/【】等のシーン見出しは共通のシーン規定になり、以降のカットが所属する
  * - NA/T/SE は同ブロック内の直前のカットに紐付ける。
  *   ブロック先頭でまだカットが無い場合は、次に現れるカットに紐付ける
  * - セリフは DIALOGUE として保持し、感情語のみ emotionHint に反映
@@ -98,10 +117,13 @@ function speakerName(speaker: string): string {
 export function parseScript(script: string): ParseResult {
   const lines = script.split(/\r?\n/);
   const cuts: Cut[] = [];
+  const scenes: Scene[] = [];
   const characterNames: string[] = [];
 
   // 現在のブロックで最後に作ったカット。区切りで null に戻す
   let current: Cut | null = null;
+  // 現在のシーン（見出しが無い字コンテでは undefined のまま）
+  let currentScene: Scene | undefined;
   // カットより先に現れたオーバーレイ（次のカットに付与）
   let pending: Overlay[] = [];
 
@@ -123,11 +145,42 @@ export function parseScript(script: string): ParseResult {
     }
   };
 
+  const newCut = (textJa: string): Cut => {
+    const cut: Cut = {
+      id: cutId(),
+      textJa,
+      durationHint: inferDuration(textJa),
+      camera: inferCamera(textJa),
+      sceneId: currentScene?.id,
+      overlays: pending,
+      characters: [],
+      emotionHint: inferEmotion(textJa),
+      status: "draft",
+    };
+    pending = [];
+    cuts.push(cut);
+    current = cut;
+    return cut;
+  };
+
   for (const raw of lines) {
     const line = raw.trim();
 
     // --- 区切り: 空行 / BGM: ---
     if (!line || stripPrefix(line, "BGM") !== null) {
+      current = null;
+      continue;
+    }
+
+    // --- シーン見出し（共通のシーン規定 + 区切り） ---
+    const heading = matchSceneHeading(line);
+    if (heading !== null) {
+      currentScene = {
+        id: cutId().replace("cut_", "scene_"),
+        name: heading,
+        descriptionJa: heading,
+      };
+      scenes.push(currentScene);
       current = null;
       continue;
     }
@@ -149,26 +202,14 @@ export function parseScript(script: string): ParseResult {
       continue;
     }
 
-    // --- ト書き ---
+    // --- ト書き（括弧つき） ---
     const action = matchAction(line);
     if (action !== null) {
       if (/^カット替わり$/.test(action)) {
         current = null;
         continue;
       }
-      const cut: Cut = {
-        id: cutId(),
-        textJa: action,
-        durationHint: inferDuration(action),
-        camera: inferCamera(action),
-        overlays: pending,
-        characters: [],
-        emotionHint: inferEmotion(action),
-        status: "draft",
-      };
-      pending = [];
-      cuts.push(cut);
-      current = cut;
+      newCut(action);
       continue;
     }
 
@@ -179,8 +220,8 @@ export function parseScript(script: string): ParseResult {
       continue;
     }
 
-    // 上記以外の行は補足メモとして直前カットのト書きに足す（情報を落とさない）
-    if (current) current.textJa += `。${line}`;
+    // --- 上記以外の行: 括弧が無くてもト書きとして扱う（自由書式への耐性） ---
+    newCut(line);
   }
 
   // 末尾に残った pending は最後のカットへ
@@ -188,7 +229,7 @@ export function parseScript(script: string): ParseResult {
     cuts[cuts.length - 1].overlays.push(...pending);
   }
 
-  return { cuts, characterNames };
+  return { cuts, scenes, characterNames };
 }
 
 /**
@@ -258,6 +299,7 @@ export function splitCut(cuts: Cut[], index: number): Cut[] {
     textJa: m[2].trim(),
     durationHint: "",
     camera: inferCamera(m[2]),
+    sceneId: cut.sceneId,
     overlays: [],
     characters: [...cut.characters],
     emotionHint: inferEmotion(m[2]),

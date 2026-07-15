@@ -10,6 +10,8 @@ export interface SheetCut {
   /** フル解像度 or サムネの data URL（無ければ枠のみ描画） */
   imageUrl: string | null;
   index: number;
+  /** 所属シーン名（メタ情報の先頭行に表示） */
+  sceneName?: string;
 }
 
 const BLUE = "#1d4ed8"; // メタ情報の青字
@@ -29,12 +31,17 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
   return lines;
 }
 
-/** カットのメタ情報行（秒数・画角・NA・T・SE）を組み立てる */
-function metaLines(cut: Cut, index: number): { text: string; bold?: boolean }[] {
+/** カットのメタ情報行（秒数・画角・シーン・NA・T・SE）を組み立てる */
+function metaLines(
+  cut: Cut,
+  index: number,
+  sceneName?: string
+): { text: string; bold?: boolean }[] {
   const head = [
     `#${index + 1}`,
     cut.durationHint || "-",
     cut.camera ? CAMERA_LABELS[cut.camera] : "画角未指定",
+    ...(sceneName ? [sceneName] : []),
   ].join("　");
   const lines: { text: string; bold?: boolean }[] = [{ text: head, bold: true }];
   for (const ov of cut.overlays) {
@@ -137,7 +144,7 @@ export async function buildStoryboardSheets(
       const lineH = 20;
       const maxLines = Math.floor((metaH - 14) / lineH);
       let used = 0;
-      outer: for (const ml of metaLines(it.cut, it.index)) {
+      outer: for (const ml of metaLines(it.cut, it.index, it.sceneName)) {
         ctx.font = `${ml.bold ? "bold " : ""}15px sans-serif`;
         for (const seg of wrapText(ctx, ml.text, cellW)) {
           if (used >= maxLines) break outer;

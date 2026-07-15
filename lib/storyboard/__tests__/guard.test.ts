@@ -146,6 +146,35 @@ describe("共通スタイル設定（全カットに同一反映）", () => {
     expect(prompt).toContain("style reference only");
   });
 
+  it("シーン規定が同一シーンの全カットへ共通反映される", () => {
+    const scene = {
+      id: "s1",
+      name: "朝の路地",
+      descriptionJa: "朝の通勤時間帯。住宅街の細い路地",
+      sceneEn: "narrow residential alley in the morning commute hour",
+    };
+    const cuts = [
+      makeCut({ id: "c1", promptEn: "a man meets a cat", sceneId: "s1" }),
+      makeCut({ id: "c2", promptEn: "a man crouching", sceneId: "s1" }),
+    ];
+    const prompts = cuts.map((cut) =>
+      buildCutPrompt({ cut, characters: [], referenceKeys: [], scene, style: "pencil_rough" })
+    );
+    for (const p of prompts) expect(p).toContain(`setting: ${scene.sceneEn}`);
+  });
+
+  it("シーン規定にも人名ガードが効く（英訳前の原文フォールバック）", () => {
+    const scene = { id: "s1", name: "路地", descriptionJa: "山田太郎の自宅前の路地" };
+    const prompt = buildCutPrompt({
+      cut: makeCut({ promptEn: "a man walking" }),
+      characters: [],
+      referenceKeys: [],
+      scene,
+      style: "pencil_rough",
+    });
+    expect(() => assertPromptSafe(prompt, BANNED)).toThrow(NameGuardError);
+  });
+
   it("styleText にも人名ガードが効く", () => {
     const prompt = buildCutPrompt({
       cut: makeCut({ promptEn: "a man in a suit" }),

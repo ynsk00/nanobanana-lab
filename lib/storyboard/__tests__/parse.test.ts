@@ -70,6 +70,38 @@ describe("parseScript: サンプル字コンテ", () => {
   });
 });
 
+describe("自由書式への耐性（括弧なしト書き・シーン見出し）", () => {
+  const FREE = `○朝の路地（朝）
+路地の塀の上に猫。歩いてきた男と目が合う
+男、足を止めて猫を見つめる
+
+○オフィス（昼）
+デスクで猫の写真を眺める男
+同僚「なに見てるの？」`;
+  const r = parseScript(FREE);
+
+  it("括弧で囲まれていない行もト書き（カット）として扱う", () => {
+    expect(r.cuts.length).toBe(3);
+    expect(r.cuts[0].textJa).toContain("塀の上に猫");
+    expect(r.cuts[2].textJa).toContain("デスクで猫の写真");
+  });
+
+  it("○見出しが共通のシーン規定になり、後続カットが所属する", () => {
+    expect(r.scenes.length).toBe(2);
+    expect(r.scenes[0].name).toBe("朝の路地（朝）");
+    expect(r.cuts[0].sceneId).toBe(r.scenes[0].id);
+    expect(r.cuts[1].sceneId).toBe(r.scenes[0].id);
+    expect(r.cuts[2].sceneId).toBe(r.scenes[1].id);
+  });
+
+  it("セリフは自由書式でもカットにならずオーバーレイになる", () => {
+    expect(r.cuts[2].overlays.some((o) => o.type === "DIALOGUE" && o.speaker === "同僚")).toBe(
+      true
+    );
+    expect(r.characterNames).toContain("同僚");
+  });
+});
+
 describe("inferCamera", () => {
   it("ト書きの語彙から画角を推定する", () => {
     expect(inferCamera("真俯瞰で捉えた路地")).toBe("top_down");

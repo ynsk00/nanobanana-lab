@@ -18,12 +18,7 @@ import { MODELS, getModel } from "@/lib/pricing";
 import { requestGeneration } from "@/lib/generation";
 import { downloadBlob, fileToDataUrl, genId, makeThumbnail } from "@/lib/image";
 import type { ImageAsset } from "@/lib/types";
-import {
-  assignCharacters,
-  mergeWithPrevious,
-  parseScript,
-  splitCut,
-} from "@/lib/storyboard/parse";
+import { mergeWithPrevious, parseScript, splitCut } from "@/lib/storyboard/parse";
 import {
   DEFAULT_STYLE,
   STYLE_PRESETS,
@@ -40,7 +35,8 @@ import {
 import { buildStoryboardSheets, type SheetCut } from "@/lib/storyboard/sheet";
 import { composeCutPng } from "@/lib/storyboard/sheet";
 import { canvasesToPdf } from "@/lib/storyboard/pdf";
-import type { CharacterSheet, Cut, StoryboardProject } from "@/lib/storyboard/types";
+import type { CharacterSheet, Cut, Scene, StoryboardProject } from "@/lib/storyboard/types";
+import type { ParseResponse } from "@/app/api/storyboard/parse/route";
 import type { AssistResponse } from "@/app/api/storyboard/assist/route";
 import type { StyleResponse } from "@/app/api/storyboard/style/route";
 
@@ -73,6 +69,7 @@ function newProject(): StoryboardProject {
     title: "新しい絵コンテ",
     scriptText: "",
     cuts: [],
+    scenes: [],
     characters: [],
     stylePreset: DEFAULT_STYLE,
     modelKey: SB_MODELS[0]?.key ?? "nano-banana-2",
@@ -130,6 +127,7 @@ export default function StoryboardEditor() {
   const [queueRunning, setQueueRunning] = useState(false);
   const [queueLabel, setQueueLabel] = useState("");
   const [translating, setTranslating] = useState(false);
+  const [parsing, setParsing] = useState(false);
   const [charBusyKey, setCharBusyKey] = useState<string | null>(null);
 
   // 直列キュー内から常に最新の state を読むためのミラー
@@ -176,21 +174,70 @@ export default function StoryboardEditor() {
   }, []);
 
   // --- 1. 字コンテ → カット表 ---
-  const parseNow = useCallback(() => {
+  // AI分解が主経路（任意の書式に対応し、ト書きを画が浮かぶ形に補完・シーンを規定する）。
+  // APIキー未設定や失敗時は記法パーサーへフォールバックする
+  const parseNow = useCallback(async () => {
     const p = projectRef.current;
     if (!p.scriptText.trim()) return;
     if (p.cuts.some((c) => c.resultAssetId)) {
       if (!confirm("カット表を作り直します。既存の生成結果は破棄されます。よろしいですか？"))
         return;
     }
-    const { cuts, characterNames } = parseScript(p.scriptText);
+
+    setParsing(true);
+    setError(null);
+    let cuts: Cut[];
+    let scenes: Scene[];
+    let characterNames: string[];
+    let perCutNames: string[][] | null = null; // AIが返すカット別の登場キャラ名
+    let note = "";
+
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (geminiKey) headers["x-gemini-api-key"] = geminiKey;
+      const res = await fetch("/api/storyboard/parse", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ script: p.scriptText }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `AI分解に失敗しました (${res.status})`);
+      }
+      const data = (await res.json()) as ParseResponse;
+      scenes = data.scenes.map((s) => ({
+        id: genId("scene_"),
+        name: s.name,
+        descriptionJa: s.descriptionJa,
+      }));
+      cuts = data.cuts.map((c) => ({
+        id: genId("cut_"),
+        textJa: c.textJa,
+        durationHint: c.durationHint || "",
+        camera: c.camera ?? null,
+        sceneId: c.sceneIndex >= 0 ? scenes[c.sceneIndex]?.id : undefined,
+        overlays: c.overlays,
+        characters: [],
+        status: "draft" as const,
+      }));
+      characterNames = data.characterNames;
+      perCutNames = data.cuts.map((c) => c.characterNames);
+      note = `AI分解: ${cuts.length}カット / ${scenes.length}シーン。`;
+    } catch (e) {
+      // フォールバック: 記法パーサー（オフライン動作）
+      const r = parseScript(p.scriptText);
+      cuts = r.cuts;
+      scenes = r.scenes;
+      characterNames = r.characterNames;
+      const reason = e instanceof Error ? e.message : "AI分解に失敗";
+      note = `記法パーサーで${cuts.length}カットに分解しました（${reason}）。`;
+    } finally {
+      setParsing(false);
+    }
 
     // キャラクター候補を登録（既存の表示名は維持）
     const characters = [...p.characters];
-    // ト書きに現れる動物も候補に加える
-    const animalNames = ["猫", "犬"].filter((a) =>
-      cuts.some((c) => c.textJa.includes(a))
-    );
+    const animalNames = ["猫", "犬"].filter((a) => cuts.some((c) => c.textJa.includes(a)));
     for (const name of [...characterNames, ...animalNames]) {
       if (!characters.some((c) => c.displayName === name)) {
         characters.push({
@@ -201,25 +248,43 @@ export default function StoryboardEditor() {
       }
     }
 
-    const assigned = assignCharacters(cuts, characters);
-    patch({ cuts: assigned, characters });
+    // カットへキャラを割当（AIのカット別キャラ名 + 表示名のト書き一致）
+    const assigned = cuts.map((cut, i) => {
+      const keys = new Set<string>();
+      for (const c of characters) {
+        if (!c.displayName) continue;
+        if (cut.textJa.includes(c.displayName)) keys.add(c.key);
+        if (perCutNames?.[i]?.includes(c.displayName)) keys.add(c.key);
+        if (cut.overlays.some((o) => o.speaker && o.speaker.split(/[・･]/)[0] === c.displayName))
+          keys.add(c.key);
+      }
+      return { ...cut, characters: Array.from(keys) };
+    });
+
+    patch({ cuts: assigned, scenes, characters });
     setSelectedId(assigned[0]?.id ?? null);
-    setMsg(
-      `${assigned.length}カットに分解しました。キャラシートの記述文を確認してから生成してください。`
-    );
-    setError(null);
-  }, [patch]);
+    setMsg(`${note}キャラシートの記述文を確認してから生成してください。`);
+  }, [geminiKey, patch]);
 
   // --- 2. 英訳（Gemini テキストモデル）+ 実在人名検出 ---
   const translate = useCallback(async (): Promise<boolean> => {
     const p = projectRef.current;
+    const sceneById = new Map((p.scenes ?? []).map((s) => [s.id, s]));
     const cutsNeed = p.cuts
       .filter((c) => !c.promptEn && c.textJa.trim())
-      .map((c) => ({ id: c.id, textJa: c.textJa }));
+      .map((c) => ({
+        id: c.id,
+        textJa: c.textJa,
+        // シーン規定を文脈として渡し、膨らませ変換の背景整合を取る
+        sceneDescription: c.sceneId ? sceneById.get(c.sceneId)?.descriptionJa : undefined,
+      }));
     const charsNeed = p.characters
       .filter((c) => c.descriptionJa.trim() && !c.descriptionEn)
       .map((c) => ({ key: c.key, descriptionJa: c.descriptionJa }));
-    if (!cutsNeed.length && !charsNeed.length) return true;
+    const scenesNeed = (p.scenes ?? [])
+      .filter((s) => s.descriptionJa.trim() && !s.sceneEn)
+      .map((s) => ({ id: s.id, descriptionJa: s.descriptionJa }));
+    if (!cutsNeed.length && !charsNeed.length && !scenesNeed.length) return true;
 
     setTranslating(true);
     try {
@@ -228,7 +293,7 @@ export default function StoryboardEditor() {
       const res = await fetch("/api/storyboard/assist", {
         method: "POST",
         headers,
-        body: JSON.stringify({ cuts: cutsNeed, characters: charsNeed }),
+        body: JSON.stringify({ cuts: cutsNeed, characters: charsNeed, scenes: scenesNeed }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -252,8 +317,12 @@ export default function StoryboardEditor() {
           const r = data.characters.find((x) => x.key === c.key);
           return r?.descriptionEn ? { ...c, descriptionEn: r.descriptionEn } : c;
         });
+        const scenes = (prev.scenes ?? []).map((s) => {
+          const r = (data.scenes ?? []).find((x) => x.id === s.id);
+          return r?.sceneEn ? { ...s, sceneEn: r.sceneEn } : s;
+        });
         const bannedNames = Array.from(new Set([...prev.bannedNames, ...data.realNames]));
-        return { ...prev, cuts, characters, bannedNames, updatedAt: Date.now() };
+        return { ...prev, cuts, characters, scenes, bannedNames, updatedAt: Date.now() };
       });
 
       if (data.realNames.length) {
@@ -301,6 +370,7 @@ export default function StoryboardEditor() {
           cut,
           characters: chars,
           referenceKeys: refChars.map((c) => c.key),
+          scene: (p.scenes ?? []).find((s) => s.id === cut.sceneId) ?? null,
           style: p.stylePreset,
           styleText: projectStyleText(p),
           styleRefIndex,
@@ -544,6 +614,14 @@ export default function StoryboardEditor() {
     }));
   }, []);
 
+  const updateScene = useCallback((id: string, sp: Partial<Scene>) => {
+    setProject((prev) => ({
+      ...prev,
+      scenes: (prev.scenes ?? []).map((s) => (s.id === id ? { ...s, ...sp } : s)),
+      updatedAt: Date.now(),
+    }));
+  }, []);
+
   const updateCharacter = useCallback((key: string, cp: Partial<CharacterSheet>) => {
     setProject((prev) => {
       const characters = prev.characters.map((c) => (c.key === key ? { ...c, ...cp } : c));
@@ -604,11 +682,13 @@ export default function StoryboardEditor() {
   // --- 書き出し ---
   const collectSheetCuts = useCallback(async (): Promise<SheetCut[]> => {
     const p = projectRef.current;
+    const sceneById = new Map((p.scenes ?? []).map((s) => [s.id, s]));
     return Promise.all(
       p.cuts.map(async (cut, index) => ({
         cut,
         index,
         imageUrl: (await assetUrl(cut.resultAssetId)) ?? cut.thumbUrl ?? null,
+        sceneName: cut.sceneId ? sceneById.get(cut.sceneId)?.name : undefined,
       }))
     );
   }, []);
@@ -688,7 +768,7 @@ export default function StoryboardEditor() {
 
   const selectedIndex = project.cuts.findIndex((c) => c.id === selectedId);
   const selectedCut = selectedIndex >= 0 ? project.cuts[selectedIndex] : null;
-  const busy = queueRunning || translating;
+  const busy = queueRunning || translating || parsing;
 
   return (
     <div className="flex h-screen flex-col bg-[#0b0b0f]">
@@ -809,9 +889,10 @@ export default function StoryboardEditor() {
               variant="primary"
               className="px-2 py-0.5 text-[11px]"
               disabled={!project.scriptText.trim() || busy}
+              title="AIが任意の書式の字コンテを解釈してシーン・カットに分解します（失敗時は記法パーサー）"
               onClick={parseNow}
             >
-              カット表に分解 →
+              {parsing ? "分解中…" : "🤖 カット表に分解 →"}
             </Button>
           </div>
           <textarea
@@ -829,12 +910,14 @@ export default function StoryboardEditor() {
         <div className="min-w-0 flex-1 overflow-y-auto border-r border-zinc-800">
           <CutTable
             cuts={project.cuts}
+            scenes={project.scenes ?? []}
             characters={project.characters}
             bannedNames={project.bannedNames}
             selectedId={selectedId}
             busy={busy}
             onSelect={setSelectedId}
             onUpdate={updateCut}
+            onUpdateScene={updateScene}
             onMerge={(i) => patch({ cuts: mergeWithPrevious(projectRef.current.cuts, i) })}
             onSplit={(i) => patch({ cuts: splitCut(projectRef.current.cuts, i) })}
             onDelete={(id) =>

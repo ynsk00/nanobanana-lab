@@ -11,8 +11,10 @@ export const maxDuration = 120;
 const TEXT_MODEL_ID = process.env.GEMINI_TEXT_MODEL_ID || "gemini-2.5-flash";
 
 interface AssistRequest {
-  cuts: { id: string; textJa: string }[];
+  cuts: { id: string; textJa: string; sceneDescription?: string }[];
   characters: { key: string; descriptionJa: string; displayName?: string }[];
+  /** 共通のシーン規定（シーン単位で英訳して全カットに再利用） */
+  scenes?: { id: string; descriptionJa: string }[];
 }
 
 export interface AssistCutResult {
@@ -27,6 +29,7 @@ export interface AssistCutResult {
 export interface AssistResponse {
   cuts: AssistCutResult[];
   characters: { key: string; descriptionEn: string }[];
+  scenes: { id: string; sceneEn: string }[];
   /** 入力全体から検出した実在人名・実在IP語 */
   realNames: string[];
 }
@@ -49,7 +52,8 @@ export async function POST(req: NextRequest) {
   }
   const cuts = (body.cuts || []).filter((c) => c?.id && c?.textJa?.trim());
   const characters = (body.characters || []).filter((c) => c?.key);
-  if (cuts.length === 0 && characters.length === 0) {
+  const scenes = (body.scenes || []).filter((s) => s?.id && s?.descriptionJa?.trim());
+  if (cuts.length === 0 && characters.length === 0 && scenes.length === 0) {
     return NextResponse.json({ error: "変換対象がありません。" }, { status: 400 });
   }
 
@@ -61,21 +65,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const instruction = `あなたは映像絵コンテ制作の支援AIです。以下の映像ト書きとキャラクター記述を処理し、JSONのみを出力してください。
+  const instruction = `あなたは映像絵コンテ制作の支援AIです。以下の映像ト書き・シーン規定・キャラクター記述を処理し、JSONのみを出力してください。
 
 ## タスク
-1. 各ト書き(cuts)を、画像生成プロンプト用の簡潔な英語に変換する:
-   - 名詞句と現在分詞中心、30語以内
+1. 各ト書き(cuts)を、画像生成プロンプト用の英語に**膨らませて**変換する:
+   - sceneDescription（共通のシーン規定）を文脈として踏まえ、構図・被写体の動き・視線・前景/背景・光を補って「1枚の画」として成立する記述にする（名詞句と現在分詞中心、45語以内）
+   - 原文に無い出来事・小道具・人物は発明しない（演出的な補完のみ）
    - 固有名詞・ブランド名・文字表示(テロップ等)に関する記述は除外する
    - 実在の人名は絶対に英訳文へ含めない（一般的な記述に置き換える）
    - location(場所)とtimeOfDay(時間帯)を英語で抽出する(不明なら省略)
    - カメラ画角が読み取れる場合のみ camera を top_down / high_angle / eye_level / close_up から選ぶ
-2. 各キャラクター記述(characters)を画像生成プロンプト用の英語(20語以内)に変換する
-3. 入力テキスト全体から、実在の人物名(タレント・俳優・著名人)や実在作品・ブランド名を検出し realNames に列挙する（架空の記号的な名前 MAN_A 等や一般名詞「男」「猫」は含めない）
+2. 各シーン規定(scenes)を、シーン内の全カットの背景描写として再利用できる英語(25語以内。場所・時間帯・天候・雰囲気)に変換する
+3. 各キャラクター記述(characters)を画像生成プロンプト用の英語(20語以内)に変換する
+4. 入力テキスト全体から、実在の人物名(タレント・俳優・著名人)や実在作品・ブランド名を検出し realNames に列挙する（架空の記号的な名前 MAN_A 等や一般名詞「男」「猫」は含めない）
 
 ## 出力形式(JSONのみ、説明文なし)
 {
   "cuts": [{"id": "...", "actionEn": "...", "location": "...", "timeOfDay": "...", "camera": "eye_level", "realNames": []}],
+  "scenes": [{"id": "...", "sceneEn": "..."}],
   "characters": [{"key": "...", "descriptionEn": "..."}],
   "realNames": []
 }
@@ -83,6 +90,9 @@ export async function POST(req: NextRequest) {
 ## 入力
 cuts:
 ${JSON.stringify(cuts, null, 2)}
+
+scenes:
+${JSON.stringify(scenes, null, 2)}
 
 characters:
 ${JSON.stringify(characters, null, 2)}`;
@@ -115,6 +125,9 @@ ${JSON.stringify(characters, null, 2)}`;
     const outChars = (parsed.characters || [])
       .filter((c) => c && typeof c.key === "string")
       .map((c) => ({ key: c.key, descriptionEn: String(c.descriptionEn || "").slice(0, 300) }));
+    const outScenes = (parsed.scenes || [])
+      .filter((s) => s && typeof s.id === "string")
+      .map((s) => ({ id: s.id, sceneEn: String(s.sceneEn || "").slice(0, 300) }));
     const realNames = Array.from(
       new Set([
         ...(Array.isArray(parsed.realNames) ? parsed.realNames.map(String) : []),
@@ -122,7 +135,12 @@ ${JSON.stringify(characters, null, 2)}`;
       ])
     ).filter((n) => n.trim().length >= 2);
 
-    const payload: AssistResponse = { cuts: outCuts, characters: outChars, realNames };
+    const payload: AssistResponse = {
+      cuts: outCuts,
+      characters: outChars,
+      scenes: outScenes,
+      realNames,
+    };
     return NextResponse.json(payload);
   } catch (e) {
     const msg = e instanceof Error ? e.message.split("\n")[0].slice(0, 200) : "変換に失敗しました";

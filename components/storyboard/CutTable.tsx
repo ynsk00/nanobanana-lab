@@ -11,6 +11,7 @@ import {
   type CameraAngle,
   type CharacterSheet,
   type Cut,
+  type Scene,
 } from "@/lib/storyboard/types";
 
 const STATUS_BADGE: Record<Cut["status"], { label: string; cls: string }> = {
@@ -28,14 +29,52 @@ const OVERLAY_STYLE: Record<string, string> = {
   DIALOGUE: "bg-zinc-800/60 text-zinc-500",
 };
 
+/** シーン見出し行。共通の舞台設定をここで編集する（シーン内全カットに反映） */
+function SceneHeader({
+  scene,
+  onUpdateScene,
+}: {
+  scene: Scene;
+  onUpdateScene: (id: string, patch: Partial<Scene>) => void;
+}) {
+  return (
+    <div className="rounded-md border border-sky-900/50 bg-sky-950/20 px-2.5 py-1.5">
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-500">
+          Scene
+        </span>
+        <input
+          value={scene.name}
+          onChange={(e) => onUpdateScene(scene.id, { name: e.target.value })}
+          placeholder="シーン名"
+          className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-sky-200 outline-none placeholder:text-sky-800"
+        />
+      </div>
+      <textarea
+        value={scene.descriptionJa}
+        onChange={(e) =>
+          // 内容が変わったら英訳は陳腐化するため破棄（次回英訳で再取得）
+          onUpdateScene(scene.id, { descriptionJa: e.target.value, sceneEn: undefined })
+        }
+        placeholder="共通のシーン規定（場所・時間帯・天候・状況）。このシーンの全カットの背景に反映されます"
+        rows={2}
+        className="mt-1 w-full resize-none rounded border border-sky-900/40 bg-zinc-950/40 px-2 py-1 text-[11px] leading-relaxed text-zinc-300"
+      />
+      {scene.sceneEn && <p className="mt-0.5 text-[10px] text-sky-700">EN: {scene.sceneEn}</p>}
+    </div>
+  );
+}
+
 export function CutTable({
   cuts,
+  scenes,
   characters,
   bannedNames,
   selectedId,
   busy,
   onSelect,
   onUpdate,
+  onUpdateScene,
   onMerge,
   onSplit,
   onDelete,
@@ -43,6 +82,7 @@ export function CutTable({
   onGenerateOne,
 }: {
   cuts: Cut[];
+  scenes: Scene[];
   characters: CharacterSheet[];
   bannedNames: string[];
   selectedId: string | null;
@@ -50,6 +90,7 @@ export function CutTable({
   busy: boolean;
   onSelect: (id: string) => void;
   onUpdate: (id: string, patch: Partial<Cut>) => void;
+  onUpdateScene: (id: string, patch: Partial<Scene>) => void;
   onMerge: (index: number) => void;
   onSplit: (index: number) => void;
   onDelete: (id: string) => void;
@@ -70,9 +111,15 @@ export function CutTable({
         const selected = cut.id === selectedId;
         const badge = STATUS_BADGE[cut.status];
         const violations = findNameViolations(cut.textJa, bannedNames);
+        // シーンの切り替わりで見出し（共通の舞台設定）を挟む
+        const sceneHeader =
+          cut.sceneId && cut.sceneId !== cuts[i - 1]?.sceneId
+            ? scenes.find((s) => s.id === cut.sceneId)
+            : undefined;
         return (
+          <React.Fragment key={cut.id}>
+          {sceneHeader && <SceneHeader scene={sceneHeader} onUpdateScene={onUpdateScene} />}
           <div
-            key={cut.id}
             onClick={() => onSelect(cut.id)}
             className={`cursor-pointer rounded-lg border p-2 transition ${
               selected
@@ -230,6 +277,7 @@ export function CutTable({
               </div>
             )}
           </div>
+          </React.Fragment>
         );
       })}
     </div>

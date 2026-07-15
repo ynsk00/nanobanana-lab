@@ -28,6 +28,21 @@ export interface Overlay {
 
 export type CutStatus = "draft" | "queued" | "generating" | "done" | "error";
 
+/**
+ * シーン = 複数カットが共有する舞台設定（場所・時間帯・状況）。
+ * ここに書いた内容はシーン内すべてのカットのプロンプトへ共通で反映され、
+ * カット間の背景・ライティングのブレを抑える
+ */
+export interface Scene {
+  id: string;
+  /** 見出し（例: 朝の路地） */
+  name: string;
+  /** 共通のシーン規定（場所・時間帯・状況。日本語） */
+  descriptionJa: string;
+  /** assist で英訳したシーン記述（プロンプトに使用） */
+  sceneEn?: string;
+}
+
 /** 1カット = 1画像 */
 export interface Cut {
   id: string;
@@ -37,6 +52,8 @@ export interface Cut {
   durationHint: string;
   /** null = 未推定（生成時は eye_level 扱い） */
   camera: CameraAngle | null;
+  /** 所属シーン（StoryboardProject.scenes の id）。無所属も可 */
+  sceneId?: string;
   overlays: Overlay[];
   /** 登場キャラクターのキー（CharacterSheet.key） */
   characters: string[];
@@ -90,6 +107,8 @@ export interface StoryboardProject {
   /** 左ペインの字コンテ原文 */
   scriptText: string;
   cuts: Cut[];
+  /** シーン一覧（カットの sceneId が参照） */
+  scenes?: Scene[];
   characters: CharacterSheet[];
   stylePreset: StylePresetKey;
   /** 共通スタイルの自由記述（全カットのプロンプトに追記。日本語可） */

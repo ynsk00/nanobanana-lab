@@ -1,6 +1,6 @@
 // 生成プロンプトの組み立て（テンプレート + カメラ辞書 + スタイルプリセット）
 
-import type { CameraAngle, CharacterSheet, Cut, StylePresetKey } from "./types";
+import type { CameraAngle, CharacterSheet, Cut, Scene, StylePresetKey } from "./types";
 
 /** camera enum → 英語フレーズ */
 export const CAMERA_PHRASES: Record<CameraAngle, string> = {
@@ -85,6 +85,11 @@ export interface BuildPromptOptions {
   characters: CharacterSheet[];
   /** 参照画像として添付するキャラのキー（添付順 = @refN の順） */
   referenceKeys: string[];
+  /**
+   * カットが所属するシーン（共通の舞台設定）。
+   * シーン内の全カットに同じ記述を入れて背景・時間帯・雰囲気を揃える
+   */
+  scene?: Scene | null;
   style: StylePresetKey;
   /**
    * プロジェクト共通のスタイル記述（自由記述 + トーン参照画像の言語化結果）。
@@ -108,6 +113,10 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
   const { cut, characters, referenceKeys, style } = opts;
   const camera = CAMERA_PHRASES[cut.camera ?? "eye_level"];
   const action = cut.promptEn?.trim() || cut.textJa.trim();
+  // シーン共通の舞台設定（英訳があれば英語、なければ原文で代替）
+  const sceneText = opts.scene
+    ? (opts.scene.sceneEn?.trim() || opts.scene.descriptionJa?.trim() || undefined)
+    : undefined;
 
   const charParts = characters.map((c) => {
     const refIndex = referenceKeys.indexOf(c.key);
@@ -123,6 +132,7 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
     camera,
     action,
     ...charParts,
+    sceneText ? `setting: ${sceneText}` : undefined,
     cut.location?.trim(),
     cut.timeOfDay?.trim(),
     cut.emotionHint?.trim(),
