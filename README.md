@@ -45,6 +45,35 @@ http://localhost:3000 を開き、初回に表示されるモーダルで API �
 
 ---
 
+## デプロイ（各自の環境へ）
+
+**共有の公開インスタンスは提供していない。** APIキーがサーバーを通過する構造上、
+第三者のキーを預かる形になるのを避けるため、利用者それぞれが自分の環境に置く方針を採っている。
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fynsk00%2Fnanobanana-lab)
+
+または CLI で：
+
+```bash
+npm i -g vercel
+vercel
+```
+
+**環境変数の設定は不要。** キーは利用者がブラウザから入力する BYO 方式のため、
+デプロイ直後からそのまま動く。
+
+> デプロイしたURLは初期状態で誰でもアクセスできる。自分だけで使うなら
+> Vercel の **Settings → Deployment Protection** で Vercel Authentication か
+> Password Protection を有効にすること。
+> 有効にしない場合、第三者が自分のキーを入れてそのURLを使えるため、
+> 生成コストは相手持ちでも**関数実行時間と帯域は自分のアカウントの消費**になる。
+
+Vercel 以外（Cloudflare Workers, Netlify, 自前の Node サーバー等）でも動くが、
+`lib/generation.ts` の `MAX_UPLOAD_BYTES`（Vercel のボディ上限4.5MBに合わせた値）は
+環境に応じて調整するとよい。ローカルで `npm run dev` するだけでも全機能が使える。
+
+---
+
 ## アーキテクチャ
 
 ```
