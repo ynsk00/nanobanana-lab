@@ -114,3 +114,23 @@ NANO_BANANA_PRO_MODEL_ID=gemini-3-pro-image-preview
 ## 技術スタック
 
 Next.js 15 (App Router) / React 19 / TypeScript / Tailwind CSS v4 / @google/genai / @xyflow/react / JSZip / Vitest
+
+---
+
+## コントリビュート
+
+改変・PR歓迎。実装に入る前に [CLAUDE.md](CLAUDE.md) を読むこと。
+コーディング規約（日本語コメント、状態管理ライブラリを入れない、依存を増やさない）と、
+壊してはいけない不変条件（APIキーをサーバーに保存しない、実在人名ガードを迂回しない等）を
+まとめてあり、AIコーディングエージェントを使う場合はそのままコンテキストとして機能する。
+
+PRを出す前に以下を通すこと。
+
+```bash
+npx tsc --noEmit
+npm test
+```
+
+## ライセンス
+
+[MIT](LICENSE) © ynsk00
