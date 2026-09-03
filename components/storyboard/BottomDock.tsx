@@ -165,7 +165,7 @@ export function BottomDock({
   return (
     <div className="flex h-[240px] shrink-0 border-t border-zinc-800 bg-zinc-950/60">
       {/* ===== キャラシート（横並び） ===== */}
-      <div className="flex min-w-0 flex-1 flex-col border-r border-zinc-800">
+      <div className="flex w-[400px] shrink-0 flex-col border-r border-zinc-800">
         <div className="flex items-center gap-2 border-b border-zinc-800/60 px-2 py-1">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
             🎭 キャラシート
@@ -200,33 +200,33 @@ export function BottomDock({
       </div>
 
       {/* ===== スタイル設定 ===== */}
-      <div className="flex w-[560px] shrink-0 flex-col overflow-y-auto">
+      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
         <div className="flex items-center gap-2 border-b border-zinc-800/60 px-2 py-1">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
             🎨 スタイル（全カット共通）
           </span>
         </div>
-        <div className="grid grid-cols-2 content-start gap-x-2 gap-y-1.5 p-2">
-          <select
-            value={project.stylePreset}
-            onChange={(e) => onPatch({ stylePreset: e.target.value as StylePresetKey })}
-            className="col-span-2 min-w-0 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
-            title="表現スタイルのプリセット"
-          >
-            {Object.values(STYLE_PRESETS).map((s) => (
-              <option key={s.key} value={s.key}>
-                {s.label} — {s.description}
-              </option>
-            ))}
-          </select>
-          {project.stylePreset === "cinematic_photo" && (
-            <p className="col-span-2 text-[9px] leading-tight text-amber-400">
-              ⚠ 実写風は肖像権に配慮して使用
-            </p>
-          )}
-
+        <div className="grid grid-cols-3 content-start gap-x-2 gap-y-1 p-2">
+          {/* col1: プリセット + 高画質化 */}
           <div>
-            <label className="mb-0.5 block text-[10px] text-zinc-500">
+            <select
+              value={project.stylePreset}
+              onChange={(e) => onPatch({ stylePreset: e.target.value as StylePresetKey })}
+              className="w-full min-w-0 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
+              title="表現スタイルのプリセット"
+            >
+              {Object.values(STYLE_PRESETS).map((s) => (
+                <option key={s.key} value={s.key}>
+                  {s.label} — {s.description}
+                </option>
+              ))}
+            </select>
+            {project.stylePreset === "cinematic_photo" && (
+              <p className="text-[9px] leading-tight text-amber-400">
+                ⚠ 実写風は肖像権に配慮して使用
+              </p>
+            )}
+            <label className="mb-0.5 mt-1 block text-[10px] text-zinc-500">
               高画質化（quality）
             </label>
             <textarea
@@ -238,6 +238,7 @@ export function BottomDock({
             />
           </div>
 
+          {/* col2: 避けたい要素 + 共通トーン */}
           <div>
             <label className="mb-0.5 block text-[10px] text-zinc-500">
               避けたい要素（negative）
@@ -249,10 +250,7 @@ export function BottomDock({
               rows={2}
               className="w-full resize-none rounded border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-[10px]"
             />
-          </div>
-
-          <div>
-            <label className="mb-0.5 block text-[10px] text-zinc-500">
+            <label className="mb-0.5 mt-1 block text-[10px] text-zinc-500">
               共通トーン（日本語可）
             </label>
             <textarea
@@ -264,73 +262,75 @@ export function BottomDock({
             />
           </div>
 
-          {/* トーン参照画像 */}
-          <div className="flex gap-1.5">
-            <div
-              className="flex h-[44px] w-[78px] shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded border border-zinc-700 bg-zinc-800"
-              title="トーン参照画像（この絵のトーンにしたい画像）"
-              onClick={() => styleFileRef.current?.click()}
-            >
-              {project.styleImageThumb ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={project.styleImageThumb} alt="" className="h-full w-full object-cover" />
-              ) : (
-                <span className="text-center text-[9px] leading-tight text-zinc-500">
-                  トーン参照
-                  <br />＋
-                </span>
-              )}
-            </div>
-            <input
-              ref={styleFileRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) onUploadStyleImage(f);
-                e.target.value = "";
-              }}
-            />
-            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <Button
-                variant="primary"
-                className="px-1.5 py-0.5 text-[9px]"
-                disabled={!project.styleImageAssetId || analyzing}
-                title="画像のトーン（色調・質感・光）をAIが言語化して全カットへ反映"
-                onClick={onAnalyzeStyleImage}
+          {/* col3: トーン参照画像 + 言語化結果 */}
+          <div>
+            <div className="flex gap-1.5">
+              <div
+                className="flex h-[44px] w-[78px] shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded border border-zinc-700 bg-zinc-800"
+                title="トーン参照画像（この絵のトーンにしたい画像）"
+                onClick={() => styleFileRef.current?.click()}
               >
-                {analyzing ? "解析中…" : "✨ 言語化"}
-              </Button>
-              {project.styleImageAssetId && (
-                <Button variant="danger" className="px-1.5 py-0.5 text-[9px]" onClick={onClearStyleImage}>
-                  削除
+                {project.styleImageThumb ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={project.styleImageThumb} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  <span className="text-center text-[9px] leading-tight text-zinc-500">
+                    トーン参照
+                    <br />＋
+                  </span>
+                )}
+              </div>
+              <input
+                ref={styleFileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onUploadStyleImage(f);
+                  e.target.value = "";
+                }}
+              />
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <Button
+                  variant="primary"
+                  className="px-1.5 py-0.5 text-[9px]"
+                  disabled={!project.styleImageAssetId || analyzing}
+                  title="画像のトーン（色調・質感・光）をAIが言語化して全カットへ反映"
+                  onClick={onAnalyzeStyleImage}
+                >
+                  {analyzing ? "解析中…" : "✨ 言語化"}
                 </Button>
-              )}
-              <label className="flex items-center gap-1 text-[9px] text-zinc-400">
-                <input
-                  type="checkbox"
-                  checked={project.attachStyleImage !== false}
-                  onChange={(e) => onPatch({ attachStyleImage: e.target.checked })}
-                  disabled={!project.styleImageAssetId}
-                />
-                毎カットに同梱
-              </label>
+                {project.styleImageAssetId && (
+                  <Button variant="danger" className="px-1.5 py-0.5 text-[9px]" onClick={onClearStyleImage}>
+                    削除
+                  </Button>
+                )}
+                <label className="flex items-center gap-1 text-[9px] text-zinc-400">
+                  <input
+                    type="checkbox"
+                    checked={project.attachStyleImage !== false}
+                    onChange={(e) => onPatch({ attachStyleImage: e.target.checked })}
+                    disabled={!project.styleImageAssetId}
+                  />
+                  毎カットに同梱
+                </label>
+              </div>
             </div>
+
+            {project.styleImageEn !== undefined && (
+              <textarea
+                value={project.styleImageEn}
+                onChange={(e) => onPatch({ styleImageEn: e.target.value })}
+                rows={2}
+                title="言語化されたトーン（編集可・全カットに反映）"
+                className="mt-1 w-full resize-none rounded border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-[10px] text-zinc-300"
+              />
+            )}
           </div>
 
-          {project.styleImageEn !== undefined && (
-            <textarea
-              value={project.styleImageEn}
-              onChange={(e) => onPatch({ styleImageEn: e.target.value })}
-              rows={2}
-              title="言語化されたトーン（編集可・全カットに反映）"
-              className="col-span-2 w-full resize-none rounded border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-[10px] text-zinc-300"
-            />
-          )}
-
           {/* 実在人名辞書 */}
-          <details className="col-span-2 rounded border border-red-900/40 bg-red-950/15 px-2 py-1">
+          <details className="col-span-3 rounded border border-red-900/40 bg-red-950/15 px-2 py-1">
             <summary className="cursor-pointer text-[10px] font-semibold text-red-300">
               🚫 実在人名・IP辞書 ({project.bannedNames.length}) — 含まれるプロンプトは送信ブロック
             </summary>

@@ -1,19 +1,45 @@
 // 生成プロンプトの組み立て（テンプレート + カメラ辞書 + スタイルプリセット）
 
-import type { CameraAngle, CharacterSheet, Cut, Scene, StylePresetKey } from "./types";
+import type {
+  CameraAngle,
+  CharacterSheet,
+  Composition,
+  Cut,
+  Scene,
+  ShotSize,
+  StylePresetKey,
+} from "./types";
 
 /** camera enum → 英語フレーズ */
 export const CAMERA_PHRASES: Record<CameraAngle, string> = {
-  top_down: "top-down aerial view",
+  eye_level: "eye level shot",
   high_angle: "high angle shot, looking down",
-  eye_level: "eye level medium shot",
   low_angle: "low angle shot, looking up",
-  close_up: "close-up shot",
-  bust_shot: "bust shot, waist-up framing",
-  full_shot: "full body shot",
-  wide: "wide establishing shot",
+  top_down: "top-down aerial view",
   over_shoulder: "over-the-shoulder shot from behind",
   pov: "first-person POV shot",
+  dutch: "dutch angle shot, tilted frame",
+};
+
+/** shotSize enum → 英語フレーズ */
+export const SHOT_SIZE_PHRASES: Record<ShotSize, string> = {
+  extreme_close_up: "extreme close-up",
+  close_up: "close-up shot",
+  bust: "bust shot, chest-up framing",
+  waist: "medium shot, waist-up framing",
+  full_body: "full body shot",
+  long: "wide long shot",
+  extreme_long: "extreme long shot, distant view",
+};
+
+/** composition enum → 英語フレーズ */
+export const COMPOSITION_PHRASES: Record<Composition, string> = {
+  rule_of_thirds: "rule of thirds composition",
+  centered: "centered composition",
+  symmetrical: "symmetrical composition",
+  diagonal: "dynamic diagonal composition",
+  negative_space: "composition with generous negative space",
+  frame_in_frame: "frame-within-frame composition",
 };
 
 export interface StylePreset {
@@ -157,7 +183,13 @@ export interface BuildPromptOptions {
  */
 export function buildCutPrompt(opts: BuildPromptOptions): string {
   const { cut, characters, referenceKeys, style } = opts;
-  const camera = CAMERA_PHRASES[cut.camera ?? "eye_level"];
+  // ショット設計（アングル/サイズ/構図）。全て未指定なら標準の目線ミディアム
+  const shotParts = [
+    cut.camera ? CAMERA_PHRASES[cut.camera] : undefined,
+    cut.shotSize ? SHOT_SIZE_PHRASES[cut.shotSize] : undefined,
+    cut.composition ? COMPOSITION_PHRASES[cut.composition] : undefined,
+  ].filter((s): s is string => !!s);
+  const shot = shotParts.length ? shotParts.join(", ") : "eye level medium shot";
   const action = cut.promptEn?.trim() || cut.textJa.trim();
   // シーン共通の舞台設定（英訳があれば英語、なければ原文で代替）
   const sceneText = opts.scene
@@ -175,13 +207,15 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
       : undefined;
 
   const parts = [
-    camera,
+    shot,
     action,
     ...charParts,
     sceneText ? `setting: ${sceneText}` : undefined,
     cut.location?.trim(),
     cut.timeOfDay?.trim(),
     cut.emotionHint?.trim(),
+    cut.poseNote?.trim() ? `subject pose: ${cut.poseNote.trim()}` : undefined,
+    cut.backgroundNote?.trim() ? `background: ${cut.backgroundNote.trim()}` : undefined,
     opts.styleText?.trim(),
     styleRef,
     STYLE_PRESETS[style].suffix,

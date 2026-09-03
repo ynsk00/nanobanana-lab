@@ -7,3 +7,5 @@
 next-env.d.ts
 .DS_Store
 .vercel
+
+.claude/settings.local.json

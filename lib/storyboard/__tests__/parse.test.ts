@@ -5,11 +5,14 @@
 import { describe, expect, it } from "vitest";
 import {
   assignCharacters,
+  dedupeCutTexts,
   inferCamera,
+  inferShotSize,
   mergeWithPrevious,
   parseScript,
   splitCut,
 } from "../parse";
+import type { Cut } from "../types";
 
 const SAMPLE = `BGM:序曲、ファンファーレ
 （朝の通勤路。路地の塀の上に、猫。歩いてきた男と目が合う）
@@ -102,17 +105,55 @@ describe("自由書式への耐性（括弧なしト書き・シーン見出し�
   });
 });
 
-describe("inferCamera", () => {
-  it("ト書きの語彙から画角を推定する", () => {
+describe("inferCamera / inferShotSize", () => {
+  it("ト書きの語彙からアングルを推定する", () => {
     expect(inferCamera("真俯瞰で捉えた路地")).toBe("top_down");
     expect(inferCamera("ハイアングルから見下ろす")).toBe("high_angle");
-    expect(inferCamera("猫に寄り")).toBe("close_up");
-    expect(inferCamera("人目線で歩く")).toBe("eye_level");
     expect(inferCamera("あおりで塀を見上げる")).toBe("low_angle");
-    expect(inferCamera("引きで路地の全景")).toBe("wide");
     expect(inferCamera("男の肩越しに猫")).toBe("over_shoulder");
-    expect(inferCamera("バストアップで男")).toBe("bust_shot");
+    expect(inferCamera("人目線で歩く")).toBe("eye_level");
     expect(inferCamera("特に指定なし")).toBeNull();
+  });
+  it("ト書きの語彙からショットサイズを推定する", () => {
+    expect(inferShotSize("猫に寄り")).toBe("close_up");
+    expect(inferShotSize("バストアップで男")).toBe("bust");
+    expect(inferShotSize("引きで路地の全景")).toBe("long");
+    expect(inferShotSize("男の全身")).toBe("full_body");
+    expect(inferShotSize("特に指定なし")).toBeNull();
+  });
+});
+
+describe("dedupeCutTexts", () => {
+  const base = {
+    durationHint: "",
+    camera: null,
+    overlays: [],
+    characters: [],
+    status: "draft" as const,
+  };
+
+  it("カット間で重複する文を後続カットから除去する", () => {
+    const cuts = [
+      { ...base, id: "a", textJa: "駅前広場を歩く翼。スマホを取り出し、何かを検索する。" },
+      { ...base, id: "b", textJa: "スマホを取り出し、何かを検索する。コロッケを頬張る翼。" },
+      { ...base, id: "c", textJa: "スマホを取り出し、何かを検索する。" },
+    ] as Cut[];
+    const out = dedupeCutTexts(cuts);
+    expect(out.length).toBe(2);
+    expect(out[1].textJa).toBe("コロッケを頬張る翼。");
+  });
+
+  it("重複が無ければそのまま", () => {
+    const cuts = [
+      { ...base, id: "a", textJa: "駅前広場を歩く翼。空を見上げる。" },
+      { ...base, id: "b", textJa: "コロッケを頬張る翼。満足げな表情。" },
+    ] as Cut[];
+    const out = dedupeCutTexts(cuts);
+    expect(out.length).toBe(2);
+    expect(out[0]).toBe(cuts[0]);
+    expect(out[1]).toBe(cuts[1]);
+    expect(out[0].textJa).toBe("駅前広場を歩く翼。空を見上げる。");
+    expect(out[1].textJa).toBe("コロッケを頬張る翼。満足げな表情。");
   });
 });
 

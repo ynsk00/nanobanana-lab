@@ -1,8 +1,8 @@
-// 絵コンテシートの合成（canvas）とカット単体PNGのテキスト合成。
-// 文字は画像に焼かず、書き出し時のみ canvas レイヤーとして重ねる。
+// 絵コンテシートの合成（canvas）とカット単体PNGの書き出し。
+// シートには各カット下に青字でメタ情報（NA/T/SE）を描く。
 
 import { loadImage } from "@/lib/contactSheet";
-import { CAMERA_LABELS, type Cut } from "./types";
+import { CAMERA_LABELS, SHOT_SIZE_LABELS, type Cut } from "./types";
 
 /** シートに載せる1カット分の描画データ */
 export interface SheetCut {
@@ -40,7 +40,12 @@ function metaLines(
   const head = [
     `#${index + 1}`,
     cut.durationHint || "-",
-    cut.camera ? CAMERA_LABELS[cut.camera] : "画角未指定",
+    [
+      cut.camera ? CAMERA_LABELS[cut.camera] : null,
+      cut.shotSize ? SHOT_SIZE_LABELS[cut.shotSize] : null,
+    ]
+      .filter(Boolean)
+      .join("・") || "画角未指定",
     ...(sceneName ? [sceneName] : []),
   ].join("　");
   const lines: { text: string; bold?: boolean }[] = [{ text: head, bold: true }];
@@ -161,15 +166,8 @@ export async function buildStoryboardSheets(
   return pages;
 }
 
-/**
- * カット単体のPNGを作る。withText=true のときのみ NA/T/SE を重ねる
- * （画像自体には文字を焼き込まない方針のため、合成は書き出し時に限る）
- */
-export async function composeCutPng(
-  imageUrl: string,
-  cut: Cut,
-  withText: boolean
-): Promise<Blob | null> {
+/** カット単体のPNGを作る（画像をそのままPNG化） */
+export async function composeCutPng(imageUrl: string): Promise<Blob | null> {
   const img = await loadImage(imageUrl);
   if (!img) return null;
   const canvas = document.createElement("canvas");
@@ -178,78 +176,5 @@ export async function composeCutPng(
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
   ctx.drawImage(img, 0, 0);
-
-  if (withText) drawOverlays(ctx, cut, img.width, img.height);
-
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/png"));
-}
-
-/** NA（青字・下部）/ PROMPT_UI（チャット風・上部）/ SE（ラベル・右上）を描画 */
-function drawOverlays(
-  ctx: CanvasRenderingContext2D,
-  cut: Cut,
-  w: number,
-  h: number
-): void {
-  const base = Math.max(16, Math.round(w / 42));
-  const pad = Math.round(base * 0.8);
-
-  // NA: 下部に青字（白フチ）
-  const nas = cut.overlays.filter((o) => o.type === "NA");
-  ctx.textAlign = "center";
-  ctx.textBaseline = "bottom";
-  let naY = h - pad;
-  for (const na of [...nas].reverse()) {
-    ctx.font = `bold ${base}px sans-serif`;
-    const lines = wrapText(ctx, na.text, w - pad * 4).reverse();
-    for (const line of lines) {
-      ctx.lineWidth = Math.max(3, base / 5);
-      ctx.strokeStyle = "rgba(255,255,255,0.9)";
-      ctx.strokeText(line, w / 2, naY);
-      ctx.fillStyle = BLUE;
-      ctx.fillText(line, w / 2, naY);
-      naY -= Math.round(base * 1.35);
-    }
-    naY -= Math.round(base * 0.4);
-  }
-
-  // PROMPT_UI: 上部に疑似チャットウィンドウ（角丸・一行）
-  const prompts = cut.overlays.filter((o) => o.type === "PROMPT_UI");
-  let puY = pad;
-  for (const pu of prompts) {
-    ctx.font = `${base}px sans-serif`;
-    const tw = Math.min(ctx.measureText(pu.text).width, w - pad * 4);
-    const bw = tw + base * 2.4;
-    const bh = base * 2.2;
-    const bx = (w - bw) / 2;
-    ctx.fillStyle = "rgba(255,255,255,0.94)";
-    ctx.strokeStyle = "rgba(0,0,0,0.25)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.roundRect(bx, puY, bw, bh, bh / 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = "#222222";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(pu.text, w / 2, puY + bh / 2, w - pad * 4);
-    puY += bh + pad / 2;
-  }
-
-  // SE: 右上に小ラベル
-  const ses = cut.overlays.filter((o) => o.type === "SE");
-  let seY = pad;
-  const seFont = Math.round(base * 0.75);
-  for (const se of ses) {
-    ctx.font = `${seFont}px sans-serif`;
-    const text = `SE: ${se.text}`;
-    const tw = ctx.measureText(text).width;
-    ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.fillRect(w - pad - tw - seFont, seY, tw + seFont, seFont * 1.8);
-    ctx.fillStyle = "#ffffff";
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillText(text, w - pad - tw - seFont / 2, seY + seFont * 0.9);
-    seY += Math.round(seFont * 2.2);
-  }
 }

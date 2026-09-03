@@ -8,6 +8,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import JSZip from "jszip";
 import { Button } from "@/components/ui";
 import { ApiKeyModal } from "@/components/ApiKeyModal";
+import { Lightbox, type LightboxImage } from "@/components/Lightbox";
 import { CutTable } from "@/components/storyboard/CutTable";
 import { CutPreview } from "@/components/storyboard/CutPreview";
 import { BottomDock } from "@/components/storyboard/BottomDock";
@@ -17,7 +18,7 @@ import { MODELS, getModel } from "@/lib/pricing";
 import { requestGeneration } from "@/lib/generation";
 import { downloadBlob, fileToDataUrl, genId, makeThumbnail } from "@/lib/image";
 import type { ImageAsset } from "@/lib/types";
-import { mergeWithPrevious, parseScript, splitCut } from "@/lib/storyboard/parse";
+import { dedupeCutTexts, mergeWithPrevious, parseScript, splitCut } from "@/lib/storyboard/parse";
 import {
   DEFAULT_NEGATIVE_PROMPT,
   DEFAULT_QUALITY_PROMPT,
@@ -129,6 +130,7 @@ export default function StoryboardEditor() {
   const [translating, setTranslating] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [charBusyKey, setCharBusyKey] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<LightboxImage | null>(null);
 
   // 直列キュー内から常に最新の state を読むためのミラー
   const projectRef = useRef(project);
@@ -152,6 +154,14 @@ export default function StoryboardEditor() {
         // 旧プロジェクトへの新フィールド補完
         if (p.qualityPrompt === undefined) p.qualityPrompt = DEFAULT_QUALITY_PROMPT;
         if (p.negativePrompt === undefined) p.negativePrompt = DEFAULT_NEGATIVE_PROMPT;
+        // 旧enum(サイズ系がcameraに入っていた)からの移行
+        const sizeMigration: Record<string, string> = {
+          close_up: "close_up", bust_shot: "bust", full_shot: "full_body", wide: "long",
+        };
+        p.cuts = p.cuts.map((c) => {
+          const m = sizeMigration[c.camera as string];
+          return m ? { ...c, camera: null, shotSize: (c.shotSize ?? m) as Cut["shotSize"] } : c;
+        });
         setProject(p);
       }
       setLoaded(true);
@@ -192,7 +202,7 @@ export default function StoryboardEditor() {
     let cuts: Cut[];
     let scenes: Scene[];
     let characterNames: string[];
-    let perCutNames: string[][] | null = null; // AIが返すカット別の登場キャラ名
+    let perCutNames: Map<string, string[]> | null = null; // AIが返すカット別の登場キャラ名（cut.id → 名前）
     let note = "";
 
     try {
@@ -218,13 +228,14 @@ export default function StoryboardEditor() {
         textJa: c.textJa,
         durationHint: c.durationHint || "",
         camera: c.camera ?? null,
+        shotSize: c.shotSize ?? null,
         sceneId: c.sceneIndex >= 0 ? scenes[c.sceneIndex]?.id : undefined,
         overlays: c.overlays,
         characters: [],
         status: "draft" as const,
       }));
       characterNames = data.characterNames;
-      perCutNames = data.cuts.map((c) => c.characterNames);
+      perCutNames = new Map(cuts.map((cut, i) => [cut.id, data.cuts[i].characterNames]));
       note = `AI分解: ${cuts.length}カット / ${scenes.length}シーン。`;
     } catch (e) {
       // フォールバック: 記法パーサー（オフライン動作）
@@ -237,6 +248,9 @@ export default function StoryboardEditor() {
     } finally {
       setParsing(false);
     }
+
+    // カット間で重複する文を除去（AI分解が同じ文を複数カットへ入れる対策）
+    cuts = dedupeCutTexts(cuts);
 
     // キャラクター候補を登録（既存の表示名は維持）
     const characters = [...p.characters];
@@ -252,12 +266,12 @@ export default function StoryboardEditor() {
     }
 
     // カットへキャラを割当（AIのカット別キャラ名 + 表示名のト書き一致）
-    const assigned = cuts.map((cut, i) => {
+    const assigned = cuts.map((cut) => {
       const keys = new Set<string>();
       for (const c of characters) {
         if (!c.displayName) continue;
         if (cut.textJa.includes(c.displayName)) keys.add(c.key);
-        if (perCutNames?.[i]?.includes(c.displayName)) keys.add(c.key);
+        if (perCutNames?.get(cut.id)?.includes(c.displayName)) keys.add(c.key);
         if (cut.overlays.some((o) => o.speaker && o.speaker.split(/[・･]/)[0] === c.displayName))
           keys.add(c.key);
       }
@@ -314,6 +328,7 @@ export default function StoryboardEditor() {
             location: r.location ?? c.location,
             timeOfDay: r.timeOfDay ?? c.timeOfDay,
             camera: c.camera ?? r.camera ?? null,
+            shotSize: c.shotSize ?? r.shotSize ?? null,
           };
         });
         const characters = prev.characters.map((c) => {
@@ -735,39 +750,32 @@ export default function StoryboardEditor() {
     [collectSheetCuts]
   );
 
-  const exportCutPng = useCallback(async (cutId: string, withText: boolean) => {
+  const exportCutPng = useCallback(async (cutId: string) => {
     const p = projectRef.current;
     const cut = p.cuts.find((c) => c.id === cutId);
     const url = await assetUrl(cut?.resultAssetId);
     if (!cut || !url) return;
     const idx = p.cuts.indexOf(cut);
-    const blob = await composeCutPng(url, cut, withText);
-    if (blob)
-      downloadBlob(blob, `cut_${String(idx + 1).padStart(2, "0")}${withText ? "_text" : ""}.png`);
+    const blob = await composeCutPng(url);
+    if (blob) downloadBlob(blob, `cut_${String(idx + 1).padStart(2, "0")}.png`);
   }, []);
 
-  const exportCutsZip = useCallback(
-    async (withText: boolean) => {
-      const p = projectRef.current;
-      const done = p.cuts.filter((c) => c.resultAssetId);
-      if (!done.length) return;
-      setMsg("カットPNGを書き出し中…");
-      const zip = new JSZip();
-      for (const cut of done) {
-        const url = await assetUrl(cut.resultAssetId);
-        if (!url) continue;
-        const idx = p.cuts.indexOf(cut);
-        const blob = await composeCutPng(url, cut, withText);
-        if (blob) zip.file(`cut_${String(idx + 1).padStart(2, "0")}.png`, blob);
-      }
-      downloadBlob(
-        await zip.generateAsync({ type: "blob" }),
-        `cuts${withText ? "_text" : ""}.zip`
-      );
-      setMsg("書き出しが完了しました。");
-    },
-    []
-  );
+  const exportCutsZip = useCallback(async () => {
+    const p = projectRef.current;
+    const done = p.cuts.filter((c) => c.resultAssetId);
+    if (!done.length) return;
+    setMsg("カットPNGを書き出し中…");
+    const zip = new JSZip();
+    for (const cut of done) {
+      const url = await assetUrl(cut.resultAssetId);
+      if (!url) continue;
+      const idx = p.cuts.indexOf(cut);
+      const blob = await composeCutPng(url);
+      if (blob) zip.file(`cut_${String(idx + 1).padStart(2, "0")}.png`, blob);
+    }
+    downloadBlob(await zip.generateAsync({ type: "blob" }), `cuts.zip`);
+    setMsg("書き出しが完了しました。");
+  }, []);
 
   // --- 派生値 ---
   const pendingCount = useMemo(
@@ -844,8 +852,8 @@ export default function StoryboardEditor() {
           <Button
             className="text-xs"
             disabled={!project.cuts.some((c) => c.resultAssetId)}
-            title="全カットPNGをZIPで保存（テキスト合成あり/なしを選択）"
-            onClick={() => exportCutsZip(confirm("テキスト（NA/T/SE）を合成しますか？\nOK=合成あり / キャンセル=画像のみ"))}
+            title="全カットPNGをZIPで保存"
+            onClick={() => exportCutsZip()}
           >
             🗜 ZIP
           </Button>
@@ -954,6 +962,9 @@ export default function StoryboardEditor() {
               generateOne(id, { useEditNote: true, emphasizeNoText: true }).catch(() => {})
             }
             onExportPng={exportCutPng}
+            onZoom={(url) =>
+              setLightbox({ id: selectedCut?.id ?? "cut", dataUrl: url, mimeType: "image/png" })
+            }
           />
         </div>
       </div>
@@ -1005,6 +1016,8 @@ export default function StoryboardEditor() {
           })
         }
       />
+
+      <Lightbox image={lightbox} onClose={() => setLightbox(null)} onAssign={() => {}} />
 
       <ApiKeyModal
         open={keyModalOpen}

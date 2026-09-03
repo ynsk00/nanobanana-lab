@@ -1,29 +1,61 @@
 // Storyboard(字コンテ→絵コンテ)機能の型定義
 
-/** カメラ画角。ト書きの語彙から自動推定し、カット表で手動修正できる */
+/** カメラアングル（高さ・視点）。ト書きの語彙から自動推定し、手動修正できる */
 export type CameraAngle =
-  | "top_down"
-  | "high_angle"
   | "eye_level"
+  | "high_angle"
   | "low_angle"
-  | "close_up"
-  | "bust_shot"
-  | "full_shot"
-  | "wide"
+  | "top_down"
   | "over_shoulder"
-  | "pov";
+  | "pov"
+  | "dutch";
 
 export const CAMERA_LABELS: Record<CameraAngle, string> = {
-  top_down: "真俯瞰",
-  high_angle: "ハイアングル",
   eye_level: "目線",
+  high_angle: "ハイアングル",
   low_angle: "ローアングル",
-  close_up: "寄り",
-  bust_shot: "バストアップ",
-  full_shot: "全身",
-  wide: "引き",
+  top_down: "真俯瞰",
   over_shoulder: "肩越し",
   pov: "POV(主観)",
+  dutch: "ダッチアングル",
+};
+
+/** ショットサイズ（被写体との距離感） */
+export type ShotSize =
+  | "extreme_close_up"
+  | "close_up"
+  | "bust"
+  | "waist"
+  | "full_body"
+  | "long"
+  | "extreme_long";
+
+export const SHOT_SIZE_LABELS: Record<ShotSize, string> = {
+  extreme_close_up: "大写し",
+  close_up: "寄り",
+  bust: "バストアップ",
+  waist: "ウエスト",
+  full_body: "全身",
+  long: "引き",
+  extreme_long: "大引き",
+};
+
+/** 構図 */
+export type Composition =
+  | "rule_of_thirds"
+  | "centered"
+  | "symmetrical"
+  | "diagonal"
+  | "negative_space"
+  | "frame_in_frame";
+
+export const COMPOSITION_LABELS: Record<Composition, string> = {
+  rule_of_thirds: "三分割",
+  centered: "日の丸",
+  symmetrical: "シンメトリー",
+  diagonal: "対角線",
+  negative_space: "余白活かし",
+  frame_in_frame: "額縁構図",
 };
 
 /**
@@ -68,6 +100,14 @@ export interface Cut {
   durationHint: string;
   /** null = 未推定（生成時は eye_level 扱い） */
   camera: CameraAngle | null;
+  /** ショットサイズ。null = 未指定 */
+  shotSize?: ShotSize | null;
+  /** 構図。null = 未指定 */
+  composition?: Composition | null;
+  /** 被写体のポーズ指定（自由記述。プロンプトに subject pose: として付与） */
+  poseNote?: string;
+  /** 背景の指定（自由記述。プロンプトに background: として付与） */
+  backgroundNote?: string;
   /** 所属シーン（StoryboardProject.scenes の id）。無所属も可 */
   sceneId?: string;
   overlays: Overlay[];

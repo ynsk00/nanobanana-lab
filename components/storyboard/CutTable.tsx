@@ -8,10 +8,12 @@ import { Button } from "@/components/ui";
 import { findNameViolations } from "@/lib/storyboard/guard";
 import {
   CAMERA_LABELS,
+  SHOT_SIZE_LABELS,
   type CameraAngle,
   type CharacterSheet,
   type Cut,
   type Scene,
+  type ShotSize,
 } from "@/lib/storyboard/types";
 
 const STATUS_BADGE: Record<Cut["status"], { label: string; cls: string }> = {
@@ -212,12 +214,31 @@ export function CutTable({
                 }
                 onClick={(e) => e.stopPropagation()}
                 className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-300"
-                title="カメラ画角"
+                title="カメラアングル"
               >
-                <option value="">画角: 自動(目線)</option>
+                <option value="">アングル</option>
                 {(Object.keys(CAMERA_LABELS) as CameraAngle[]).map((k) => (
                   <option key={k} value={k}>
                     {CAMERA_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={cut.shotSize ?? ""}
+                onChange={(e) =>
+                  onUpdate(cut.id, {
+                    shotSize: (e.target.value || null) as ShotSize | null,
+                    generatedPrompt: undefined,
+                  })
+                }
+                onClick={(e) => e.stopPropagation()}
+                className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-300"
+                title="ショットサイズ"
+              >
+                <option value="">サイズ</option>
+                {(Object.keys(SHOT_SIZE_LABELS) as ShotSize[]).map((k) => (
+                  <option key={k} value={k}>
+                    {SHOT_SIZE_LABELS[k]}
                   </option>
                 ))}
               </select>

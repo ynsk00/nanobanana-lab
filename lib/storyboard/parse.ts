@@ -15,7 +15,7 @@
 //
 // 区切り: 空行 / BGM: 行 / （カット替わり） / シーン見出し
 
-import type { CameraAngle, Cut, Overlay, Scene } from "./types";
+import type { CameraAngle, Cut, Overlay, Scene, ShotSize } from "./types";
 
 /** 半角/全角コロンの両方を許容した行頭プレフィックス判定 */
 function stripPrefix(line: string, prefix: string): string | null {
@@ -45,18 +45,26 @@ function matchDialogue(line: string): Overlay | null {
   return { type: "DIALOGUE", speaker: m[1].trim(), text: m[2].trim() };
 }
 
-/** ト書きの語彙からカメラ画角を推定 */
+/** ト書きの語彙からカメラアングルを推定 */
 export function inferCamera(textJa: string): CameraAngle | null {
   if (/真俯瞰/.test(textJa)) return "top_down";
   if (/ハイアングル|俯瞰|見下ろ/.test(textJa)) return "high_angle";
   if (/あおり|ローアングル|見上げ/.test(textJa)) return "low_angle";
-  if (/バスト/.test(textJa)) return "bust_shot";
-  if (/クローズ|どアップ|(顔|表情|手元|足元)の?アップ|寄り/.test(textJa)) return "close_up";
-  if (/引き|ワイド|ロングショット|全景/.test(textJa)) return "wide";
   if (/肩越し|背中越し/.test(textJa)) return "over_shoulder";
   if (/POV|主観/.test(textJa)) return "pov";
-  if (/全身/.test(textJa)) return "full_shot";
   if (/人目線|目線|アイレベル/.test(textJa)) return "eye_level";
+  return null;
+}
+
+/** ト書きの語彙からショットサイズを推定 */
+export function inferShotSize(textJa: string): ShotSize | null {
+  if (/どアップ|大写し/.test(textJa)) return "extreme_close_up";
+  if (/バスト/.test(textJa)) return "bust";
+  if (/クローズ|アップ|寄り/.test(textJa)) return "close_up";
+  if (/ウエスト/.test(textJa)) return "waist";
+  if (/大引き|超ロング/.test(textJa)) return "extreme_long";
+  if (/引き|ワイド|ロング|全景/.test(textJa)) return "long";
+  if (/全身/.test(textJa)) return "full_body";
   return null;
 }
 
@@ -157,6 +165,7 @@ export function parseScript(script: string): ParseResult {
       textJa,
       durationHint: inferDuration(textJa),
       camera: inferCamera(textJa),
+      shotSize: inferShotSize(textJa),
       sceneId: currentScene?.id,
       overlays: pending,
       characters: [],
@@ -239,6 +248,29 @@ export function parseScript(script: string): ParseResult {
 }
 
 /**
+ * カット間で重複する文を除去する(AI分解が同じ文を複数カットに入れる対策)。
+ * 文単位(。区切り)で比較し、既出の文(正規化後8文字以上)を後続カットから落とす。
+ * 全文が重複だったカットは配列から除去する
+ */
+export function dedupeCutTexts(cuts: Cut[]): Cut[] {
+  const seen = new Set<string>();
+  const norm = (s: string) => s.replace(/[\s。．、，]/g, "");
+  const result: Cut[] = [];
+  for (const cut of cuts) {
+    const sentences = cut.textJa.split(/(?<=[。．])/).map((s) => s.trim()).filter(Boolean);
+    const kept = sentences.filter((s) => {
+      const n = norm(s);
+      if (n.length >= 8 && seen.has(n)) return false;
+      if (n.length >= 8) seen.add(n);
+      return true;
+    });
+    const textJa = kept.join("").replace(/^[。．、\s]+/, "");
+    if (textJa) result.push(cut.textJa === textJa ? cut : { ...cut, textJa });
+  }
+  return result;
+}
+
+/**
  * カットにキャラクターを自動割り当てする。
  * 表示名がト書き・セリフ話者に含まれるキャラを紐付ける
  */
@@ -305,6 +337,7 @@ export function splitCut(cuts: Cut[], index: number): Cut[] {
     textJa: m[2].trim(),
     durationHint: "",
     camera: inferCamera(m[2]),
+    shotSize: inferShotSize(m[2]),
     sceneId: cut.sceneId,
     overlays: [],
     characters: [...cut.characters],

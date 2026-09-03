@@ -1,13 +1,20 @@
 "use client";
 
-// 選択カットのプレビュー。画像に文字は焼かず、NA/T/SE を HTML/CSS の
-// オーバーレイレイヤーとして重ねる。修正指示 → 参照付き編集での再生成もここから。
+// 選択カットのプレビュー。修正指示 → 参照付き編集での再生成もここから。
 
 import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui";
 import * as db from "@/lib/db";
 import type { ImageAsset } from "@/lib/types";
-import { CAMERA_LABELS, type Cut } from "@/lib/storyboard/types";
+import {
+  CAMERA_LABELS,
+  COMPOSITION_LABELS,
+  SHOT_SIZE_LABELS,
+  type CameraAngle,
+  type Composition,
+  type Cut,
+  type ShotSize,
+} from "@/lib/storyboard/types";
 
 export function CutPreview({
   cut,
@@ -17,6 +24,7 @@ export function CutPreview({
   onRegenerate,
   onRegenerateNoText,
   onExportPng,
+  onZoom,
 }: {
   cut: Cut | null;
   index: number;
@@ -26,10 +34,11 @@ export function CutPreview({
   onRegenerate: (id: string) => void;
   /** 文字混入リカバリ: no text 強調で再生成 */
   onRegenerateNoText: (id: string) => void;
-  onExportPng: (id: string, withText: boolean) => void;
+  onExportPng: (id: string) => void;
+  /** プレビュー画像をクリックで拡大表示 */
+  onZoom: (fullUrl: string) => void;
 }) {
   const [fullUrl, setFullUrl] = useState<string | null>(null);
-  const [showText, setShowText] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -54,75 +63,114 @@ export function CutPreview({
     );
   }
 
-  const nas = cut.overlays.filter((o) => o.type === "NA");
-  const prompts = cut.overlays.filter((o) => o.type === "PROMPT_UI");
-  const ses = cut.overlays.filter((o) => o.type === "SE");
-
   return (
     <div className="space-y-3 p-3">
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-semibold text-zinc-300">
           カット #{index + 1}
           <span className="ml-2 text-zinc-500">
-            {cut.durationHint || "-"}／{cut.camera ? CAMERA_LABELS[cut.camera] : "目線(自動)"}
+            {cut.durationHint || "-"}／
+            {cut.camera ? CAMERA_LABELS[cut.camera] : "目線(自動)"}
+            {cut.shotSize ? `・${SHOT_SIZE_LABELS[cut.shotSize]}` : ""}
           </span>
         </h3>
-        <label className="flex items-center gap-1 text-[11px] text-zinc-400">
-          <input
-            type="checkbox"
-            checked={showText}
-            onChange={(e) => setShowText(e.target.checked)}
-          />
-          テキスト表示
-        </label>
       </div>
 
-      {/* 16:9 プレビュー + オーバーレイレイヤー */}
+      {/* 16:9 プレビュー */}
       <div className="relative aspect-video w-full overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
         {fullUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={fullUrl} alt="" className="h-full w-full object-contain" />
+          <img
+            src={fullUrl}
+            alt=""
+            className="h-full w-full cursor-zoom-in object-contain"
+            title="クリックで拡大"
+            onClick={() => fullUrl && onZoom(fullUrl)}
+          />
         ) : (
           <div className="flex h-full items-center justify-center text-xs text-zinc-700">
             {cut.status === "generating" ? "生成中…" : "未生成"}
           </div>
         )}
+      </div>
 
-        {showText && (
-          <>
-            {/* PROMPT_UI: 疑似チャットウィンドウ（角丸・一行） */}
-            <div className="pointer-events-none absolute inset-x-0 top-3 flex flex-col items-center gap-1.5 px-6">
-              {prompts.map((o, i) => (
-                <div
-                  key={i}
-                  className="max-w-full truncate rounded-full border border-black/20 bg-white/95 px-4 py-1.5 text-xs text-zinc-800 shadow"
-                >
-                  {o.text}
-                </div>
-              ))}
-            </div>
-            {/* SE: 右上ラベル */}
-            <div className="pointer-events-none absolute right-2 top-2 flex flex-col items-end gap-1">
-              {ses.map((o, i) => (
-                <span key={i} className="rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white">
-                  SE: {o.text}
-                </span>
-              ))}
-            </div>
-            {/* NA: 下部・青字 */}
-            <div className="pointer-events-none absolute inset-x-0 bottom-3 flex flex-col items-center gap-0.5 px-6">
-              {nas.map((o, i) => (
-                <p
-                  key={i}
-                  className="text-center text-sm font-bold text-blue-700"
-                  style={{ textShadow: "0 0 3px rgba(255,255,255,.95), 0 0 6px rgba(255,255,255,.9)" }}
-                >
-                  {o.text}
-                </p>
-              ))}
-            </div>
-          </>
-        )}
+      {/* ショット設計（アングル/サイズ/構図/ポーズ/背景） */}
+      <div className="space-y-1.5 rounded border border-zinc-800 bg-zinc-900/40 p-2">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+          🎥 ショット設計
+        </p>
+        <div className="flex gap-1.5">
+          <select
+            value={cut.camera ?? ""}
+            onChange={(e) =>
+              onUpdate(cut.id, {
+                camera: (e.target.value || null) as CameraAngle | null,
+                generatedPrompt: undefined,
+              })
+            }
+            className="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px]"
+            title="カメラアングル"
+          >
+            <option value="">アングル</option>
+            {(Object.keys(CAMERA_LABELS) as CameraAngle[]).map((k) => (
+              <option key={k} value={k}>
+                {CAMERA_LABELS[k]}
+              </option>
+            ))}
+          </select>
+          <select
+            value={cut.shotSize ?? ""}
+            onChange={(e) =>
+              onUpdate(cut.id, {
+                shotSize: (e.target.value || null) as ShotSize | null,
+                generatedPrompt: undefined,
+              })
+            }
+            className="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px]"
+            title="ショットサイズ"
+          >
+            <option value="">サイズ</option>
+            {(Object.keys(SHOT_SIZE_LABELS) as ShotSize[]).map((k) => (
+              <option key={k} value={k}>
+                {SHOT_SIZE_LABELS[k]}
+              </option>
+            ))}
+          </select>
+          <select
+            value={cut.composition ?? ""}
+            onChange={(e) =>
+              onUpdate(cut.id, {
+                composition: (e.target.value || null) as Composition | null,
+                generatedPrompt: undefined,
+              })
+            }
+            className="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px]"
+            title="構図"
+          >
+            <option value="">構図: 指定なし</option>
+            {(Object.keys(COMPOSITION_LABELS) as Composition[]).map((k) => (
+              <option key={k} value={k}>
+                {COMPOSITION_LABELS[k]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <input
+          value={cut.poseNote ?? ""}
+          onChange={(e) =>
+            onUpdate(cut.id, { poseNote: e.target.value, generatedPrompt: undefined })
+          }
+          placeholder="被写体のポーズ（例: しゃがんで猫に手を伸ばす）"
+          className="w-full rounded border border-zinc-800 bg-zinc-950/60 px-2 py-1 text-[11px]"
+        />
+        <input
+          value={cut.backgroundNote ?? ""}
+          onChange={(e) =>
+            onUpdate(cut.id, { backgroundNote: e.target.value, generatedPrompt: undefined })
+          }
+          placeholder="背景の指定（例: ブロック塀と朝日を背景に）"
+          className="w-full rounded border border-zinc-800 bg-zinc-950/60 px-2 py-1 text-[11px]"
+        />
       </div>
 
       {cut.error && (
@@ -173,17 +221,9 @@ export function CutPreview({
             variant="ghost"
             className="px-2 py-1 text-[11px]"
             disabled={!cut.resultAssetId}
-            onClick={() => onExportPng(cut.id, false)}
+            onClick={() => onExportPng(cut.id)}
           >
             PNG
-          </Button>
-          <Button
-            variant="ghost"
-            className="px-2 py-1 text-[11px]"
-            disabled={!cut.resultAssetId}
-            onClick={() => onExportPng(cut.id, true)}
-          >
-            PNG(文字入り)
           </Button>
         </div>
       </div>

@@ -207,6 +207,27 @@ describe("共通スタイル設定（全カットに同一反映）", () => {
     expect(p.indexOf("avoid:")).toBeLessThan(p.indexOf("no text"));
   });
 
+  it("ショット設計(アングル/サイズ/構図/ポーズ/背景)がプロンプトへ反映される", () => {
+    const p = buildCutPrompt({
+      cut: makeCut({
+        promptEn: "a man reaching out to a cat",
+        camera: "low_angle",
+        shotSize: "close_up",
+        composition: "rule_of_thirds",
+        poseNote: "crouching, reaching out to a cat",
+        backgroundNote: "block wall and morning sun",
+      }),
+      characters: [],
+      referenceKeys: [],
+      style: "pencil_rough",
+    });
+    expect(p).toContain("low angle shot");
+    expect(p).toContain("close-up shot");
+    expect(p).toContain("rule of thirds composition");
+    expect(p).toContain("subject pose: crouching, reaching out to a cat");
+    expect(p).toContain("background: block wall and morning sun");
+  });
+
   it("styleText にも人名ガードが効く", () => {
     const prompt = buildCutPrompt({
       cut: makeCut({ promptEn: "a man in a suit" }),

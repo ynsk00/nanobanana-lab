@@ -30,12 +30,17 @@ export interface ParsedCut {
     | "high_angle"
     | "eye_level"
     | "low_angle"
-    | "close_up"
-    | "bust_shot"
-    | "full_shot"
-    | "wide"
     | "over_shoulder"
-    | "pov";
+    | "pov"
+    | "dutch";
+  shotSize?:
+    | "extreme_close_up"
+    | "close_up"
+    | "bust"
+    | "waist"
+    | "full_body"
+    | "long"
+    | "extreme_long";
   durationHint?: string;
   overlays: ParsedOverlay[];
   /** このカットに登場するキャラクター名（表示名） */
@@ -61,12 +66,18 @@ const VALID_CAMERAS = [
   "high_angle",
   "eye_level",
   "low_angle",
-  "close_up",
-  "bust_shot",
-  "full_shot",
-  "wide",
   "over_shoulder",
   "pov",
+  "dutch",
+];
+const VALID_SIZES = [
+  "extreme_close_up",
+  "close_up",
+  "bust",
+  "waist",
+  "full_body",
+  "long",
+  "extreme_long",
 ];
 const VALID_OVERLAYS = ["NA", "PROMPT_UI", "SE", "DIALOGUE"];
 
@@ -97,9 +108,10 @@ export async function POST(req: NextRequest) {
 2. **カット**: 1カット = 1枚の画。全体で6〜12カット程度を目安に、映像として自然なカット割りにする
 3. **textJa（ト書き）**: 各カットの画の内容。原文が簡素な場合は、構図・人物の動き・視線・背景が画として浮かぶように1〜2文へ軽く膨らませる。ただし原文に無い出来事・小道具・人物を発明しない（演出的な補完のみ）
 4. **画像化しないもの**: BGM・音楽指定は無視。テロップ/字幕(T)・ナレーション(NA)・効果音(SE)・セリフ(DIALOGUE)は textJa に含めず overlays に分類する。セリフの感情は textJa の表情描写に反映してよい
-5. **camera**: 画角が読み取れる/演出上自然な場合のみ次から選ぶ: top_down(真俯瞰) / high_angle(俯瞰) / eye_level(目線) / low_angle(あおり) / close_up(寄り) / bust_shot(バストアップ) / full_shot(全身) / wide(引き) / over_shoulder(肩越し・背中越し) / pov(主観)
+5. **camera / shotSize**: 読み取れる/演出上自然な場合のみ選ぶ。camera(アングル): top_down(真俯瞰) / high_angle(俯瞰) / eye_level(目線) / low_angle(あおり) / over_shoulder(肩越し) / pov(主観) / dutch(傾き)。shotSize(サイズ): extreme_close_up(大写し) / close_up(寄り) / bust(バストアップ) / waist(ウエスト) / full_body(全身) / long(引き) / extreme_long(大引き)
 6. **characterNames**: 各カットに映るキャラクター名（人物・動物）。字コンテ内の呼び名をそのまま使う
 7. 実在の人名・ブランド名は textJa に残してよい（後段で置換処理される）
+8. 同じ文・同じ出来事を複数のカットの textJa に重複させない。各出来事はどれか1つのカットにのみ属する(前のカットの内容を次のカットで繰り返さない)
 
 ## 出力形式(JSONのみ)
 {
@@ -108,6 +120,7 @@ export async function POST(req: NextRequest) {
     "sceneIndex": 0,
     "textJa": "...",
     "camera": "high_angle",
+    "shotSize": "close_up",
     "durationHint": "4s",
     "overlays": [{"type": "NA", "text": "...", "speaker": "男"}],
     "characterNames": ["男", "猫"]
@@ -144,9 +157,12 @@ ${script}`;
           typeof c.sceneIndex === "number" && c.sceneIndex >= 0 && c.sceneIndex < scenes.length
             ? c.sceneIndex
             : -1,
-        textJa: String(c.textJa).slice(0, 600),
+        textJa: String(c.textJa).replace(/^[。．、\s]+/, "").slice(0, 600),
         camera: VALID_CAMERAS.includes(c.camera as string)
           ? (c.camera as ParsedCut["camera"])
+          : undefined,
+        shotSize: VALID_SIZES.includes(c.shotSize as string)
+          ? (c.shotSize as ParsedCut["shotSize"])
           : undefined,
         durationHint: c.durationHint ? String(c.durationHint).slice(0, 12) : "",
         overlays: (Array.isArray(c.overlays) ? c.overlays : [])
