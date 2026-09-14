@@ -30,6 +30,18 @@ export interface ModelDef {
   imageSizeTier?: "1k" | "2k";
   /** 制御生成ノードの能力記述子 */
   controls?: ModelControls;
+  /** Google用: 選択可能な出力解像度 ("1K"/"2K"/"4K")。未定義なら解像度選択UIを出さない */
+  imageSizes?: string[];
+  /** 解像度別の概算単価(USD)。未定義の解像度は pricePerImage を使う */
+  pricePerImageBySize?: Record<string, number>;
+}
+
+/** 解像度に応じた概算単価を返す（bySize になければ pricePerImage） */
+export function priceForImage(model: ModelDef, imageSize?: string): number {
+  if (imageSize && model.pricePerImageBySize?.[imageSize] !== undefined) {
+    return model.pricePerImageBySize[imageSize];
+  }
+  return model.pricePerImage;
 }
 
 const NANO_BANANA_2_ID =
@@ -66,6 +78,8 @@ export const MODELS: Record<string, ModelDef> = {
       "21:9",
     ],
     description: "高品質・高解像度。仕上げや複雑な指示向け (Gemini 3 Pro Image)。",
+    imageSizes: ["1K", "2K", "4K"],
+    pricePerImageBySize: { "1K": 0.134, "2K": 0.134, "4K": 0.24 },
   },
   "gpt-image-1": {
     key: "gpt-image-1",

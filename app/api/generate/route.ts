@@ -3,6 +3,7 @@ import { GoogleGenAI } from "@google/genai";
 import {
   getModel,
   openaiSizeForAspect,
+  priceForImage,
   replicateSizeForAspect,
   type ModelDef,
 } from "@/lib/pricing";
@@ -20,6 +21,8 @@ interface GenerateRequest {
   inputImages: string[]; // data URLs
   referenceImages: string[]; // data URLs
   controls?: ControlParams;
+  /** Google用: 出力解像度 ("1K"/"2K"/"4K")。対応モデルのみ有効 */
+  imageSize?: string;
 }
 
 /** data URL を Gemini の inlineData パートに変換 */
@@ -77,7 +80,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "不正なリクエストです。" }, { status: 400 });
   }
 
-  const { modelKey, aspectRatio, prompt, inputImages = [], referenceImages = [], controls } = body;
+  const { modelKey, aspectRatio, prompt, inputImages = [], referenceImages = [], controls, imageSize } = body;
   const count = Math.min(Math.max(1, Number(body.count) || 1), 8);
   const model = getModel(modelKey);
   const hasControlImage = !!(controls?.identityImage || controls?.controlImage || controls?.styleImage);
@@ -89,7 +92,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const args: HandlerArgs = { aspectRatio, count, prompt, inputImages, referenceImages, controls };
+  const args: HandlerArgs = { aspectRatio, count, prompt, inputImages, referenceImages, controls, imageSize };
 
   if (model.provider === "replicate") {
     const apiKey =
@@ -133,11 +136,12 @@ interface HandlerArgs {
   inputImages: string[];
   referenceImages: string[];
   controls?: ControlParams;
+  imageSize?: string;
 }
 
 // ---------- Google (Gemini / Nano Banana) ----------
 async function handleGoogle(model: ModelDef, apiKey: string, args: HandlerArgs) {
-  const { aspectRatio, count, prompt, inputImages, referenceImages } = args;
+  const { aspectRatio, count, prompt, inputImages, referenceImages, imageSize } = args;
   const ai = new GoogleGenAI({ apiKey });
 
   const parts: Record<string, unknown>[] = [];
@@ -172,6 +176,11 @@ async function handleGoogle(model: ModelDef, apiKey: string, args: HandlerArgs) 
   else if (parts.length > 0)
     parts.push({ text: "上記の入力画像をもとに、参照画像を参考にして画像を生成してください。" });
 
+  const imageConfig: Record<string, unknown> = { aspectRatio };
+  if (imageSize && model.imageSizes?.includes(imageSize)) {
+    imageConfig.imageSize = imageSize;
+  }
+
   const start = Date.now();
   const tasks = Array.from({ length: count }).map(() =>
     ai.models.generateContent({
@@ -179,7 +188,7 @@ async function handleGoogle(model: ModelDef, apiKey: string, args: HandlerArgs) 
       contents: [{ role: "user", parts }],
       config: {
         responseModalities: ["IMAGE"],
-        imageConfig: { aspectRatio },
+        imageConfig,
       } as Record<string, unknown>,
     })
   );
@@ -222,7 +231,7 @@ async function handleGoogle(model: ModelDef, apiKey: string, args: HandlerArgs) 
     }
   }
 
-  const costUsd = results.length * model.pricePerImage;
+  const costUsd = results.length * priceForImage(model, imageSize);
   const payload: GenerateResponse = {
     results,
     costUsd,

@@ -73,6 +73,8 @@ export interface GenerateParams {
   count: number;
   prompt: string;
   controls?: ControlParams;
+  /** Google用: 出力解像度 ("1K"/"2K"/"4K")。対応モデルのみ有効 */
+  imageSize?: string;
 }
 
 /** 制御画像は検出品質を守るため強圧縮しない（下限~1280px） */
@@ -130,6 +132,7 @@ export async function requestGeneration(
       inputImages: fitted.inputs,
       referenceImages: fitted.refs,
       controls,
+      imageSize: params.imageSize,
     }),
   });
   if (!res.ok) {

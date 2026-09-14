@@ -8,7 +8,7 @@ import { ApiKeyModal } from "@/components/ApiKeyModal";
 import { Lightbox, type LightboxImage } from "@/components/Lightbox";
 import { PromptDiff } from "@/components/PromptDiff";
 import { getApiKey, maskKey } from "@/lib/settings";
-import { MODELS, DEFAULT_MODEL_KEY, getModel } from "@/lib/pricing";
+import { MODELS, DEFAULT_MODEL_KEY, getModel, priceForImage } from "@/lib/pricing";
 import type {
   Batch,
   GenerateResponse,
@@ -66,6 +66,7 @@ export default function Home() {
   const [promptText, setPromptText] = useState("");
   const [modelKey, setModelKey] = useState(DEFAULT_MODEL_KEY);
   const [aspectRatio, setAspectRatio] = useState("1:1");
+  const [imageSize, setImageSize] = useState<string | undefined>(undefined);
   const [count, setCount] = useState(1);
   const [batchMode, setBatchMode] = useState<BatchMode>("combined");
 
@@ -138,6 +139,15 @@ export default function Home() {
       setAspectRatio(model.aspectRatios[0]);
     }
   }, [model, aspectRatio]);
+
+  // モデル変更時の解像度補正（非対応モデルでは未指定に戻す）
+  useEffect(() => {
+    if (!model.imageSizes) {
+      if (imageSize !== undefined) setImageSize(undefined);
+    } else if (!imageSize || !model.imageSizes.includes(imageSize)) {
+      setImageSize(model.imageSizes[0]);
+    }
+  }, [model, imageSize]);
 
   // 実行中ジョブがある間、経過時間表示を更新
   useEffect(() => {
@@ -296,7 +306,8 @@ export default function Home() {
   // 「入力ごと」モードは入力枚数 × count が総出力枚数
   const totalImages =
     batchMode === "perInput" ? Math.max(1, selectedInputs.length) * count : count;
-  const estCost = (totalImages * model.pricePerImage).toFixed(3);
+  const unitPrice = priceForImage(model, imageSize);
+  const estCost = (totalImages * unitPrice).toFixed(3);
 
   // --- 生成（複数同時実行可。送信時の設定をスナップショットして独立に走らせる） ---
   const generate = useCallback(async () => {
@@ -329,6 +340,7 @@ export default function Home() {
       modelLabel: model.label,
       modelId: model.id,
       aspectRatio,
+      imageSize,
       count,
       inputs: selectedInputs,
       refs: selectedRefs,
@@ -351,6 +363,7 @@ export default function Home() {
         openaiKey,
         modelKey: snap.modelKey,
         aspectRatio: snap.aspectRatio,
+        imageSize: snap.imageSize,
         count: snap.count,
         prompt: snap.prompt,
       };
@@ -451,7 +464,7 @@ export default function Home() {
     } finally {
       setJobs((prev) => prev.filter((j) => j.id !== jobId));
     }
-  }, [activeKey, geminiKey, openaiKey, promptText, batchMode, selectedInputs, selectedRefs, modelKey, aspectRatio, count, model]);
+  }, [activeKey, geminiKey, openaiKey, promptText, batchMode, selectedInputs, selectedRefs, modelKey, aspectRatio, imageSize, count, model]);
 
   // --- バッチ操作 ---
   // バッチ本体＋フル画像(assets)をストレージから削除
@@ -958,6 +971,23 @@ export default function Home() {
                   </select>
                 </div>
 
+                {model.imageSizes && (
+                  <div>
+                    <Label>出力解像度</Label>
+                    <select
+                      value={imageSize ?? model.imageSizes[0]}
+                      onChange={(e) => setImageSize(e.target.value)}
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-950/60 px-3 py-2 text-sm outline-none focus:border-amber-400/60"
+                    >
+                      {model.imageSizes.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div>
                   <Label>
                     {batchMode === "perInput" ? `1入力あたりの枚数: ${count}` : `出力枚数: ${count}`}
@@ -979,7 +1009,7 @@ export default function Home() {
                 </Button>
                 <div className="text-xs text-zinc-400">
                   概算コスト <b className="text-amber-400">${estCost}</b>
-                  <span className="text-zinc-600"> （合計{totalImages}枚 × ${model.pricePerImage.toFixed(3)}）</span>
+                  <span className="text-zinc-600"> （合計{totalImages}枚 × ${unitPrice.toFixed(3)}）</span>
                 </div>
               </div>
 

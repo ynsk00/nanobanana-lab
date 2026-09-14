@@ -67,6 +67,14 @@ export const COMPOSITION_LABELS: Record<Composition, string> = {
  */
 export type OverlayType = "NA" | "PROMPT_UI" | "SE" | "DIALOGUE";
 
+/** オーバーレイ種別の表示ラベル（UI・シート出力共通） */
+export const OVERLAY_LABELS: Record<OverlayType, string> = {
+  NA: "NA",
+  PROMPT_UI: "T",
+  SE: "SE",
+  DIALOGUE: "セリフ",
+};
+
 export interface Overlay {
   type: OverlayType;
   text: string;
@@ -185,6 +193,8 @@ export interface StoryboardProject {
   /** 避けたい要素（ネガティブ）。Geminiにはnegative_promptパラメータが無いため "avoid: ..." としてプロンプトに埋め込む */
   negativePrompt?: string;
   modelKey: string;
+  /** Google用: 出力解像度 ("1K"/"2K"/"4K")。未設定は "1K" 扱い。対応モデルのみ有効 */
+  imageSize?: string;
   /**
    * 実在人名・実在IP語の辞書（プロジェクト単位）。
    * ここに載った語がプロンプトに含まれると送信をブロックする。

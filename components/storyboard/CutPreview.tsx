@@ -20,6 +20,7 @@ export function CutPreview({
   cut,
   index,
   busy,
+  promptPreview,
   onUpdate,
   onRegenerate,
   onRegenerateNoText,
@@ -29,6 +30,8 @@ export function CutPreview({
   cut: Cut | null;
   index: number;
   busy: boolean;
+  /** 生成前に確認できる「実際に送信されるプロンプト」（親でcutPromptOptions/previewCutPromptから算出） */
+  promptPreview: string;
   onUpdate: (id: string, patch: Partial<Cut>) => void;
   /** 修正指示を反映して再生成（画像があれば参照付き編集） */
   onRegenerate: (id: string) => void;
@@ -39,10 +42,12 @@ export function CutPreview({
   onZoom: (fullUrl: string) => void;
 }) {
   const [fullUrl, setFullUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let alive = true;
     setFullUrl(null);
+    setCopied(false);
     if (cut?.resultAssetId) {
       db.get<ImageAsset>("assets", cut.resultAssetId).then((a) => {
         if (alive) setFullUrl(a?.dataUrl || cut.thumbUrl || null);
@@ -173,19 +178,35 @@ export function CutPreview({
         />
       </div>
 
+      {/* 送信プロンプト（生成前に確認できる。実際に送信される内容と同じ） */}
+      <details className="rounded border border-zinc-800 bg-zinc-900/40 px-2 py-1.5">
+        <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+          📝 送信プロンプト
+        </summary>
+        <p className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-zinc-800 bg-zinc-950/60 p-1.5 font-mono text-[11px] leading-relaxed text-zinc-400">
+          {promptPreview}
+        </p>
+        <div className="mt-1.5 flex items-center gap-2">
+          <Button
+            variant="ghost"
+            className="px-2 py-0.5 text-[11px]"
+            onClick={() => {
+              navigator.clipboard.writeText(promptPreview);
+              setCopied(true);
+            }}
+          >
+            {copied ? "コピーしました" : "コピー"}
+          </Button>
+          {cut.generatedPrompt && cut.generatedPrompt !== promptPreview && (
+            <span className="text-[10px] text-amber-400/80">前回送信時から変更があります</span>
+          )}
+        </div>
+      </details>
+
       {cut.error && (
         <p className="rounded bg-red-950/40 px-2 py-1.5 text-[11px] text-red-300">{cut.error}</p>
       )}
 
-      {/* 最終プロンプト（確認用） */}
-      {cut.generatedPrompt && (
-        <details className="rounded border border-zinc-800 bg-zinc-900/40 px-2 py-1.5">
-          <summary className="cursor-pointer text-[11px] text-zinc-500">送信プロンプト</summary>
-          <p className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] text-zinc-400">
-            {cut.generatedPrompt}
-          </p>
-        </details>
-      )}
       {cut.promptEn && !cut.generatedPrompt && (
         <p className="text-[11px] text-zinc-500">EN: {cut.promptEn}</p>
       )}

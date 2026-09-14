@@ -2,7 +2,7 @@
 // シートには各カット下に青字でメタ情報（NA/T/SE）を描く。
 
 import { loadImage } from "@/lib/contactSheet";
-import { CAMERA_LABELS, SHOT_SIZE_LABELS, type Cut } from "./types";
+import { CAMERA_LABELS, OVERLAY_LABELS, SHOT_SIZE_LABELS, type Cut } from "./types";
 
 /** シートに載せる1カット分の描画データ */
 export interface SheetCut {
@@ -50,9 +50,9 @@ function metaLines(
   ].join("　");
   const lines: { text: string; bold?: boolean }[] = [{ text: head, bold: true }];
   for (const ov of cut.overlays) {
-    if (ov.type === "NA") lines.push({ text: `NA: ${ov.text}` });
-    else if (ov.type === "PROMPT_UI") lines.push({ text: `T: ${ov.text}` });
-    else if (ov.type === "SE") lines.push({ text: `SE: ${ov.text}` });
+    if (ov.type === "NA" || ov.type === "PROMPT_UI" || ov.type === "SE") {
+      lines.push({ text: `${OVERLAY_LABELS[ov.type]}: ${ov.text}` });
+    }
   }
   return lines;
 }

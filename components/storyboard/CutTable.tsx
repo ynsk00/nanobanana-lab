@@ -8,6 +8,7 @@ import { Button } from "@/components/ui";
 import { findNameViolations } from "@/lib/storyboard/guard";
 import {
   CAMERA_LABELS,
+  OVERLAY_LABELS,
   SHOT_SIZE_LABELS,
   type CameraAngle,
   type CharacterSheet,
@@ -290,9 +291,9 @@ export function CutTable({
                   <span
                     key={j}
                     className={`max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${OVERLAY_STYLE[ov.type]}`}
-                    title={`${ov.type}${ov.speaker ? `(${ov.speaker})` : ""}: ${ov.text}`}
+                    title={`${OVERLAY_LABELS[ov.type]}${ov.speaker ? `(${ov.speaker})` : ""}: ${ov.text}`}
                   >
-                    {ov.type === "DIALOGUE" ? `💬${ov.speaker ?? ""}` : ov.type}: {ov.text}
+                    {ov.type === "DIALOGUE" ? `💬${ov.speaker ?? ""}` : OVERLAY_LABELS[ov.type]}: {ov.text}
                   </span>
                 ))}
               </div>

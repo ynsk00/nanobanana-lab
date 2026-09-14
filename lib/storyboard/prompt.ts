@@ -7,6 +7,7 @@ import type {
   Cut,
   Scene,
   ShotSize,
+  StoryboardProject,
   StylePresetKey,
 } from "./types";
 
@@ -251,6 +252,51 @@ export function buildCharacterSheetPrompt(
   ]
     .filter((p): p is string => !!p)
     .join(", ");
+}
+
+/** プロジェクト共通のスタイル記述（言語化済みトーン + 自由記述） */
+export function projectStyleText(p: StoryboardProject): string | undefined {
+  const text = [p.styleImageEn, p.styleNotes]
+    .map((s) => s?.trim())
+    .filter(Boolean)
+    .join(", ");
+  return text || undefined;
+}
+
+/**
+ * カット生成用の BuildPromptOptions を組み立てる（純粋関数。アセットの実ロードはしない）。
+ * styleRefIndex は「参照画像を持つキャラ数」を基にした見積もりで、
+ * 実際のアセットロード結果（読み込み失敗で枚数が変わる場合がある）は
+ * 呼び出し側（generateOne）で上書きする
+ */
+export function cutPromptOptions(
+  p: StoryboardProject,
+  cut: Cut,
+  extra?: { includeEditNote?: boolean; emphasizeNoText?: boolean }
+): BuildPromptOptions {
+  const characters = p.characters.filter((c) => cut.characters.includes(c.key));
+  const refChars = characters.filter((c) => c.imageAssetId);
+  const styleRefIndex =
+    p.attachStyleImage !== false && p.styleImageAssetId ? refChars.length : null;
+
+  return {
+    cut,
+    characters,
+    referenceKeys: refChars.map((c) => c.key),
+    scene: (p.scenes ?? []).find((s) => s.id === cut.sceneId) ?? null,
+    style: p.stylePreset,
+    styleText: projectStyleText(p),
+    styleRefIndex,
+    qualityText: p.qualityPrompt,
+    negativeText: p.negativePrompt,
+    includeEditNote: extra?.includeEditNote,
+    emphasizeNoText: extra?.emphasizeNoText,
+  };
+}
+
+/** 生成前に「実際に送信されるプロンプト」を確認するための純粋関数 */
+export function previewCutPrompt(p: StoryboardProject, cut: Cut): string {
+  return buildCutPrompt(cutPromptOptions(p, cut));
 }
 
 /**

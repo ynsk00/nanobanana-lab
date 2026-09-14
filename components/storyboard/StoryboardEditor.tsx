@@ -14,7 +14,7 @@ import { CutPreview } from "@/components/storyboard/CutPreview";
 import { BottomDock } from "@/components/storyboard/BottomDock";
 import * as db from "@/lib/db";
 import { getApiKey } from "@/lib/settings";
-import { MODELS, getModel } from "@/lib/pricing";
+import { MODELS, getModel, priceForImage } from "@/lib/pricing";
 import { requestGeneration } from "@/lib/generation";
 import { downloadBlob, fileToDataUrl, genId, makeThumbnail } from "@/lib/image";
 import type { ImageAsset } from "@/lib/types";
@@ -26,6 +26,9 @@ import {
   buildCharacterSheetPrompt,
   buildCutPrompt,
   buildStandingFromFacePrompt,
+  cutPromptOptions,
+  previewCutPrompt,
+  projectStyleText,
 } from "@/lib/storyboard/prompt";
 import {
   NameGuardError,
@@ -106,15 +109,6 @@ async function assetUrl(assetId?: string): Promise<string | null> {
   return a?.dataUrl ?? null;
 }
 
-/** プロジェクト共通のスタイル記述（言語化済みトーン + 自由記述） */
-function projectStyleText(p: StoryboardProject): string | undefined {
-  const text = [p.styleImageEn, p.styleNotes]
-    .map((s) => s?.trim())
-    .filter(Boolean)
-    .join(", ");
-  return text || undefined;
-}
-
 export default function StoryboardEditor() {
   const [project, setProject] = useState<StoryboardProject>(newProject);
   const [loaded, setLoaded] = useState(false);
@@ -138,6 +132,7 @@ export default function StoryboardEditor() {
   const cancelRef = useRef(false);
 
   const model = getModel(project.modelKey);
+  const unitPrice = priceForImage(model, project.imageSize);
 
   // --- 初回ロード & 自動保存 ---
   useEffect(() => {
@@ -374,7 +369,13 @@ export default function StoryboardEditor() {
           await Promise.all(refChars.map((c) => assetUrl(c.imageAssetId)))
         ).filter((u): u is string => !!u);
 
-        // トーン参照画像を末尾の参照として同梱（@refN の N はキャラ参照の後）
+        const promptOptions = cutPromptOptions(p, cut, {
+          includeEditNote: opts.useEditNote,
+          emphasizeNoText: opts.emphasizeNoText,
+        });
+
+        // トーン参照画像を末尾の参照として同梱（@refN の N はキャラ参照の後）。
+        // cutPromptOptions の見積もりをアセット実ロード結果で上書きする
         let styleRefIndex: number | null = null;
         if (p.attachStyleImage !== false && p.styleImageAssetId) {
           const styleUrl = await assetUrl(p.styleImageAssetId);
@@ -383,20 +384,9 @@ export default function StoryboardEditor() {
             refUrls.push(styleUrl);
           }
         }
+        promptOptions.styleRefIndex = styleRefIndex;
 
-        const prompt = buildCutPrompt({
-          cut,
-          characters: chars,
-          referenceKeys: refChars.map((c) => c.key),
-          scene: (p.scenes ?? []).find((s) => s.id === cut.sceneId) ?? null,
-          style: p.stylePreset,
-          styleText: projectStyleText(p),
-          styleRefIndex,
-          qualityText: p.qualityPrompt,
-          negativeText: p.negativePrompt,
-          includeEditNote: opts.useEditNote,
-          emphasizeNoText: opts.emphasizeNoText,
-        });
+        const prompt = buildCutPrompt(promptOptions);
         // 実在人名ガード（送信直前の最終ゲート）
         assertPromptSafe(prompt, p.bannedNames);
 
@@ -417,6 +407,7 @@ export default function StoryboardEditor() {
             aspectRatio: "16:9",
             count: 1,
             prompt,
+            imageSize: p.imageSize,
           },
           inputs,
           refUrls
@@ -450,7 +441,7 @@ export default function StoryboardEditor() {
       setMsg("未生成のカットはありません（再生成はカット単位で行えます）。");
       return;
     }
-    const cost = targets.length * model.pricePerImage;
+    const cost = targets.length * priceForImage(model, p.imageSize);
     if (
       !confirm(
         `未生成の ${targets.length} カットを直列で生成します。\n` +
@@ -507,7 +498,15 @@ export default function StoryboardEditor() {
         );
         assertPromptSafe(prompt, p.bannedNames);
         const res = await requestGeneration(
-          { geminiKey, openaiKey, modelKey: p.modelKey, aspectRatio: "2:3", count: 1, prompt },
+          {
+            geminiKey,
+            openaiKey,
+            modelKey: p.modelKey,
+            aspectRatio: "2:3",
+            count: 1,
+            prompt,
+            imageSize: p.imageSize,
+          },
           [],
           []
         );
@@ -554,7 +553,15 @@ export default function StoryboardEditor() {
         );
         assertPromptSafe(prompt, p.bannedNames);
         const res = await requestGeneration(
-          { geminiKey, openaiKey, modelKey: p.modelKey, aspectRatio: "2:3", count: 1, prompt },
+          {
+            geminiKey,
+            openaiKey,
+            modelKey: p.modelKey,
+            aspectRatio: "2:3",
+            count: 1,
+            prompt,
+            imageSize: p.imageSize,
+          },
           [faceUrl],
           []
         );
@@ -794,6 +801,12 @@ export default function StoryboardEditor() {
   const selectedCut = selectedIndex >= 0 ? project.cuts[selectedIndex] : null;
   const busy = queueRunning || translating || parsing;
 
+  // 選択カットの「実際に送信されるプロンプト」（送信前確認用）
+  const promptPreview = useMemo(
+    () => (selectedCut ? previewCutPrompt(project, selectedCut) : ""),
+    [project, selectedCut]
+  );
+
   return (
     <div className="flex h-screen flex-col bg-[#0b0b0f]">
       {/* 上部バー */}
@@ -818,6 +831,20 @@ export default function StoryboardEditor() {
             </option>
           ))}
         </select>
+        {model.imageSizes && (
+          <select
+            value={project.imageSize ?? "1K"}
+            onChange={(e) => patch({ imageSize: e.target.value })}
+            className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs"
+            title="出力解像度"
+          >
+            {model.imageSizes.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        )}
         <Button className="text-xs" disabled={busy || !project.cuts.length} onClick={translate}>
           {translating ? "英訳中…" : "✏ 英訳"}
         </Button>
@@ -836,10 +863,10 @@ export default function StoryboardEditor() {
             variant="primary"
             className="text-xs"
             disabled={busy || pendingCount === 0}
-            title={`未生成 ${pendingCount} 枚 × $${model.pricePerImage}`}
+            title={`未生成 ${pendingCount} 枚 × $${unitPrice}`}
             onClick={runQueue}
           >
-            ▶ 一括生成 ({pendingCount}枚 ≈ ${(pendingCount * model.pricePerImage).toFixed(2)})
+            ▶ 一括生成 ({pendingCount}枚 ≈ ${(pendingCount * unitPrice).toFixed(2)})
           </Button>
         )}
         <div className="flex items-center gap-1">
@@ -956,6 +983,7 @@ export default function StoryboardEditor() {
             cut={selectedCut}
             index={selectedIndex}
             busy={busy}
+            promptPreview={promptPreview}
             onUpdate={updateCut}
             onRegenerate={(id) => generateOne(id, { useEditNote: true }).catch(() => {})}
             onRegenerateNoText={(id) =>
