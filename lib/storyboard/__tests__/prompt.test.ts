@@ -3,8 +3,8 @@
 // テスト用のプロジェクト/カットは架空の題材（猫と会社員）で作る。
 
 import { describe, expect, it } from "vitest";
-import { buildCutPrompt, characterSentence } from "../prompt";
-import type { CharacterSheet, Cut } from "../types";
+import { buildCutPrompt, characterSentence, cutPromptOptions } from "../prompt";
+import type { CharacterSheet, Cut, StoryboardProject } from "../types";
 
 function makeCut(patch: Partial<Cut> = {}): Cut {
   return {
@@ -15,6 +15,23 @@ function makeCut(patch: Partial<Cut> = {}): Cut {
     overlays: [],
     characters: [],
     status: "draft",
+    ...patch,
+  };
+}
+
+function makeProject(patch: Partial<StoryboardProject> = {}): StoryboardProject {
+  return {
+    id: "sb_test",
+    title: "テスト",
+    scriptText: "",
+    cuts: [],
+    scenes: [],
+    characters: [],
+    stylePreset: "pencil_rough",
+    modelKey: "nano-banana-2",
+    bannedNames: [],
+    createdAt: 0,
+    updatedAt: 0,
     ...patch,
   };
 }
@@ -224,5 +241,112 @@ describe("buildCutPrompt: Style段落の styleText 文整形", () => {
     const idx = prompt.indexOf("Overall look: muted earthy palette, soft film grain.");
     const after = prompt.slice(idx + "Overall look: muted earthy palette, soft film grain.".length).trimStart();
     expect(after.startsWith("Match the overall tone")).toBe(true);
+  });
+});
+
+describe("buildCutPrompt: Layout段落（スケッチ）", () => {
+  it("sketchInputIndex: 0 + strict → Layout段落がShot段落の直後にあり @in1 と faithfully を含む", () => {
+    const prompt = buildCutPrompt({
+      cut: makeCut({ promptEn: "a man crouches near a cat on a wall", sketchStrength: "strict" }),
+      characters: [],
+      referenceKeys: [],
+      style: "pencil_rough",
+      sketchInputIndex: 0,
+    });
+    const paragraphs = prompt.split("\n\n");
+    expect(paragraphs[0]).toBe("A medium shot at eye level.");
+    expect(paragraphs[1]).toContain("@in1");
+    expect(paragraphs[1]).toContain("faithfully");
+  });
+
+  it("loose → 'loose composition reference' を含む", () => {
+    const prompt = buildCutPrompt({
+      cut: makeCut({ promptEn: "a man crouches near a cat on a wall", sketchStrength: "loose" }),
+      characters: [],
+      referenceKeys: [],
+      style: "pencil_rough",
+      sketchInputIndex: 0,
+    });
+    expect(prompt).toContain("loose composition reference");
+  });
+
+  it("sketchInputIndex が null なら Layout段落は出ない", () => {
+    const prompt = buildCutPrompt({
+      cut: makeCut({ promptEn: "a man walks down a quiet street" }),
+      characters: [],
+      referenceKeys: [],
+      style: "pencil_rough",
+      sketchInputIndex: null,
+    });
+    expect(prompt).not.toContain("layout guide");
+    expect(prompt).not.toContain("composition reference");
+  });
+
+  it("スケッチありでト書き(textJa/promptEn)が空でも例外なく文字列を返し、Layout段落を含む", () => {
+    const prompt = buildCutPrompt({
+      cut: makeCut({ textJa: "", sketchStrength: "strict" }),
+      characters: [],
+      referenceKeys: [],
+      style: "pencil_rough",
+      sketchInputIndex: 0,
+    });
+    expect(typeof prompt).toBe("string");
+    expect(prompt).toContain("Use input image @in1 as the layout guide");
+  });
+});
+
+describe("buildCutPrompt: 修正指示の対象画像(revisionInputIndex)", () => {
+  it("revisionInputIndex: 1 + includeEditNote → 'apply to input image @in2' を含む", () => {
+    const prompt = buildCutPrompt({
+      cut: makeCut({ promptEn: "a man walks down a quiet street", editNote: "make the cat bigger" }),
+      characters: [],
+      referenceKeys: [],
+      style: "pencil_rough",
+      includeEditNote: true,
+      revisionInputIndex: 1,
+    });
+    expect(prompt).toContain("apply to input image @in2");
+    expect(prompt).toContain("make the cat bigger");
+  });
+
+  it("revisionInputIndex が null なら従来通り 'apply to the previous image' になる", () => {
+    const prompt = buildCutPrompt({
+      cut: makeCut({ promptEn: "a man walks down a quiet street", editNote: "make the cat bigger" }),
+      characters: [],
+      referenceKeys: [],
+      style: "pencil_rough",
+      includeEditNote: true,
+      revisionInputIndex: null,
+    });
+    expect(prompt).toContain("apply to the previous image");
+  });
+});
+
+describe("cutPromptOptions: スケッチ・修正指示のインデックス見積もり", () => {
+  it("sketchあり＋editNoteあり＋resultAssetIdあり → sketchInputIndex 0, revisionInputIndex 1", () => {
+    const project = makeProject();
+    const cut = makeCut({
+      sketchAssetId: "sbsk_1",
+      editNote: "make the cat bigger",
+      resultAssetId: "sbimg_1",
+    });
+    const opts = cutPromptOptions(project, cut, { includeEditNote: true });
+    expect(opts.sketchInputIndex).toBe(0);
+    expect(opts.revisionInputIndex).toBe(1);
+  });
+
+  it("sketchのみ（editNoteなし）→ sketchInputIndex 0, revisionInputIndex null", () => {
+    const project = makeProject();
+    const cut = makeCut({ sketchAssetId: "sbsk_1" });
+    const opts = cutPromptOptions(project, cut, {});
+    expect(opts.sketchInputIndex).toBe(0);
+    expect(opts.revisionInputIndex).toBeNull();
+  });
+
+  it("スケッチが無ければ sketchInputIndex は null", () => {
+    const project = makeProject();
+    const cut = makeCut();
+    const opts = cutPromptOptions(project, cut, {});
+    expect(opts.sketchInputIndex).toBeNull();
   });
 });

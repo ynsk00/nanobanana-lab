@@ -16,18 +16,26 @@ export interface QaScore {
   characterMatch: number;
   /** 指定スタイルらしさ(0-5) */
   styleMatch: number;
+  /** スケッチとの構図・フレーミング・配置の一致度(0-5)。スケッチがある場合のみ採点 */
+  layoutMatch?: number;
 }
 
 /**
  * QAスコアから総合判定を出す。
  * - retry: 文字混入、またはト書き/キャラの不一致が著しい(actionMatch/characterMatchが2以下)
- * - warn : いずれかの指標が3、またはstyleMatchが低いなど、完全な合格ではない
+ * - warn : いずれかの指標が3、またはstyleMatch/layoutMatchが低いなど、完全な合格ではない
  * - ok   : actionMatch/characterMatch/styleMatch すべて4以上 かつ 文字混入なし
+ *          (layoutMatchがある場合はそれも4以上)
  *
- * styleMatch はどれだけ低くても単独では retry の条件にならない(warn止まり)。
+ * styleMatch/layoutMatch はどれだけ低くても単独では retry の条件にならない(warn止まり)。
+ * レイアウト類似の機械判定は不確実なため、layoutMatch は warn止まりに留める。
  */
 export function qaVerdict(qa: QaScore): QaVerdict {
   if (qa.textDetected || qa.actionMatch <= 2 || qa.characterMatch <= 2) return "retry";
-  const allGood = qa.actionMatch >= 4 && qa.characterMatch >= 4 && qa.styleMatch >= 4;
+  const allGood =
+    qa.actionMatch >= 4 &&
+    qa.characterMatch >= 4 &&
+    qa.styleMatch >= 4 &&
+    (qa.layoutMatch === undefined || qa.layoutMatch >= 4);
   return allGood ? "ok" : "warn";
 }

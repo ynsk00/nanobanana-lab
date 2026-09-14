@@ -102,6 +102,14 @@ await するだけなので、キューの直列性はここで担保されて�
 - 判定ロジック `qaVerdict` は `lib/storyboard/qa.ts` の純粋関数。閾値を変えるときは
   `qa.test.ts` の境界値テストも更新する
 
+### 9. 生成リクエストの入力画像の順序は [スケッチ, 修正対象の直前画像] で固定
+
+`doGenerateOnce` は `cut.sketchAssetId` があればスケッチを `@in1`、修正指示（editNote /
+QA の revisionHint）があれば直前の生成画像をその次に積む。プロンプト側の `sketchInputIndex` /
+`revisionInputIndex` はアセットの実ロード結果で上書きされる（`cutPromptOptions` の値は見積もり）。
+Layout 段落は Shot 段落の直後、Revision 段落は `apply to input image @inN` と対象を明示する。
+入力画像を増やす変更をするときは、この順序と両インデックスの整合を保つこと。
+
 ## Storyboard モードの処理の流れ
 
 字コンテ（テキスト）から絵コンテ画像までの経路：
@@ -110,7 +118,8 @@ await するだけなので、キューの直列性はここで担保されて�
 字コンテ入力
   ↓  /api/storyboard/parse （AI分解。APIキー無し/失敗時は lib/storyboard/parse.ts にフォールバック）
 シーン + カット表
-  ↓  ユーザーがカット表で編集（ト書き・アングル・ショットサイズ・構図・キャラ紐付け）
+  ↓  ユーザーがカット表で編集（ト書き・アングル・ショットサイズ・構図・照明・レンズ・キャラ紐付け）
+  ↓  任意: 手書きスケッチを各カットに登録（レイアウト参照。生成時は入力画像 @in1 として送る）
   ↓  /api/storyboard/assist （ト書きを英訳 + 実在人名を検出）
   ↓  lib/storyboard/prompt.ts （cutPromptOptions → buildCutPrompt。右パネルの「送信プロンプト」も同じ経路で事前表示）
   ↓  guard.ts assertPromptSafe() ← 実在人名が残っていればここで遮断

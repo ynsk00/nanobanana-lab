@@ -43,6 +43,105 @@ const OVERLAY_STYLE: Record<string, string> = {
   DIALOGUE: "bg-zinc-800/60 text-zinc-500",
 };
 
+const SKETCH_ACCEPT = "image/png,image/jpeg,image/webp";
+
+/**
+ * 1カット分の手書きスケッチ枠。未登録なら「＋スケッチ」のドロップ領域（クリック選択も可）、
+ * 登録済みならサムネ（クリックで拡大）+ 削除ボタンを表示する。複数ファイルを落とした場合は
+ * 一括登録（onAssignMultiple）に回す
+ */
+function CutSketchSlot({
+  cut,
+  onSet,
+  onClear,
+  onAssignMultiple,
+  onZoom,
+}: {
+  cut: Cut;
+  onSet: (cutId: string, file: File) => void;
+  onClear: (cutId: string) => void;
+  onAssignMultiple: (files: File[]) => void;
+  onZoom: (url: string) => void;
+}) {
+  const fileRef = React.useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = React.useState(false);
+
+  const handleFiles = (files: FileList | null) => {
+    if (!files || !files.length) return;
+    if (files.length === 1) onSet(cut.id, files[0]);
+    else onAssignMultiple(Array.from(files));
+  };
+
+  if (cut.sketchThumbUrl) {
+    return (
+      <div className="relative flex h-12 w-[85px] shrink-0 items-center justify-center overflow-hidden rounded border border-violet-800/60 bg-zinc-950">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={cut.sketchThumbUrl}
+          alt="スケッチ"
+          className="h-full w-full cursor-zoom-in object-cover"
+          title="クリックで拡大"
+          onClick={(e) => {
+            e.stopPropagation();
+            onZoom(cut.sketchThumbUrl!);
+          }}
+        />
+        <button
+          className="absolute right-0 top-0 rounded-bl bg-black/60 px-1 text-[9px] text-zinc-300 hover:text-red-400"
+          title="スケッチを削除"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClear(cut.id);
+          }}
+        >
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onClick={(e) => {
+        e.stopPropagation();
+        fileRef.current?.click();
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(false);
+        handleFiles(e.dataTransfer.files);
+      }}
+      title="手書きスケッチをドラッグ&ドロップ、またはクリックして選択（複数可）"
+      className={`flex h-12 w-[85px] shrink-0 cursor-pointer items-center justify-center rounded border border-dashed text-center text-[9px] leading-tight transition ${
+        dragOver
+          ? "border-amber-500 bg-amber-500/10 text-amber-400"
+          : "border-zinc-700 text-zinc-600 hover:border-zinc-500 hover:text-zinc-400"
+      }`}
+    >
+      ＋<br />スケッチ
+      <input
+        ref={fileRef}
+        type="file"
+        accept={SKETCH_ACCEPT}
+        multiple
+        className="hidden"
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => {
+          handleFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
+    </div>
+  );
+}
+
 /** シーン見出し行。共通の舞台設定をここで編集する（シーン内全カットに反映） */
 function SceneHeader({
   scene,
@@ -94,6 +193,10 @@ export function CutTable({
   onDelete,
   onToggleCharacter,
   onGenerateOne,
+  onSetSketch,
+  onClearSketch,
+  onAssignSketches,
+  onZoom,
 }: {
   cuts: Cut[];
   scenes: Scene[];
@@ -110,7 +213,17 @@ export function CutTable({
   onDelete: (id: string) => void;
   onToggleCharacter: (cutId: string, charKey: string) => void;
   onGenerateOne: (id: string) => void;
+  /** 1カットへスケッチを登録 */
+  onSetSketch: (cutId: string, file: File) => void;
+  /** カットのスケッチを削除 */
+  onClearSketch: (cutId: string) => void;
+  /** 複数ファイルをファイル名順にスケッチ未登録カットへ一括割当 */
+  onAssignSketches: (files: File[]) => void;
+  /** スケッチサムネのクリックで拡大表示 */
+  onZoom: (url: string) => void;
 }) {
+  const bulkFileRef = React.useRef<HTMLInputElement>(null);
+
   if (cuts.length === 0) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center text-xs text-zinc-600">
@@ -121,6 +234,28 @@ export function CutTable({
 
   return (
     <div className="space-y-2 p-2">
+      <div className="flex items-center justify-end px-1">
+        <input
+          ref={bulkFileRef}
+          type="file"
+          accept={SKETCH_ACCEPT}
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = e.target.files;
+            if (files && files.length) onAssignSketches(Array.from(files));
+            e.target.value = "";
+          }}
+        />
+        <Button
+          variant="ghost"
+          className="px-2 py-0.5 text-[11px]"
+          title="複数の手書きスケッチをファイル名順に、未登録のカットへ先頭から割り当てます"
+          onClick={() => bulkFileRef.current?.click()}
+        >
+          📎 スケッチ一括登録
+        </Button>
+      </div>
       {cuts.map((cut, i) => {
         const selected = cut.id === selectedId;
         const badge = STATUS_BADGE[cut.status];
@@ -154,7 +289,19 @@ export function CutTable({
                   <span className="text-[9px] text-zinc-700">16:9</span>
                 )}
               </div>
+              <CutSketchSlot
+                cut={cut}
+                onSet={onSetSketch}
+                onClear={onClearSketch}
+                onAssignMultiple={onAssignSketches}
+                onZoom={onZoom}
+              />
               <span className={`rounded px-1.5 py-0.5 text-[10px] ${badge.cls}`}>{badge.label}</span>
+              {cut.sketchThumbUrl && (
+                <span className="rounded px-1.5 py-0.5 text-[10px] bg-violet-900/40 text-violet-300">
+                  ✏ スケッチ
+                </span>
+              )}
               {cut.qa &&
                 (() => {
                   const qb = qaBadge(cut.qa);

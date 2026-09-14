@@ -51,4 +51,20 @@ describe("qaVerdict", () => {
     expect(qaVerdict(score({ actionMatch: 4, characterMatch: 4, styleMatch: 4 }))).toBe("ok");
     expect(qaVerdict(score())).toBe("ok");
   });
+
+  it("layoutMatchが1でも他が良ければwarn（retryにはしない）", () => {
+    expect(qaVerdict(score({ layoutMatch: 1 }))).toBe("warn");
+  });
+
+  it("layoutMatchが0でも文字混入・action/characterMatchが良好ならretryにはならない", () => {
+    expect(qaVerdict(score({ layoutMatch: 0 }))).not.toBe("retry");
+  });
+
+  it("layoutMatchが未定義なら判定に影響しない（他が良好ならok）", () => {
+    expect(qaVerdict(score({ layoutMatch: undefined }))).toBe("ok");
+  });
+
+  it("layoutMatchも4以上なら他が良好な場合ok", () => {
+    expect(qaVerdict(score({ layoutMatch: 4 }))).toBe("ok");
+  });
 });

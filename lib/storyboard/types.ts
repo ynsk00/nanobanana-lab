@@ -170,6 +170,12 @@ export interface Cut {
   /** セリフから抽出した感情ヒント（英語。プロンプトに追記） */
   emotionHint?: string;
 
+  /** 手書きスケッチ（レイアウト参照）。フル解像度は assets ストア、サムネはインライン */
+  sketchAssetId?: string;
+  sketchThumbUrl?: string;
+  /** スケッチの踏襲度。strict=構図・配置を厳密に再現 / loose=大まかな参考。既定 strict */
+  sketchStrength?: "strict" | "loose";
+
   // --- 翻訳結果（/api/storyboard/assist が埋める） ---
   /** 英訳済みのシーン+アクション記述（30語以内目安） */
   promptEn?: string;
@@ -200,6 +206,8 @@ export interface Cut {
     characterMatch: number;
     /** 指定スタイルらしさ(0-5) */
     styleMatch: number;
+    /** スケッチとの構図・フレーミング・配置の一致度(0-5)。スケッチがある場合のみ採点 */
+    layoutMatch?: number;
     /** 日本語の短い指摘（最大5件） */
     issues: string[];
     /** 再生成時にプロンプトへ足す英語1文（問題なければ空文字） */

@@ -32,6 +32,8 @@ export function CutPreview({
   onRerunQa,
   onRegenerateWithHint,
   onExportPng,
+  onSetSketch,
+  onClearSketch,
   onZoom,
 }: {
   cut: Cut | null;
@@ -49,11 +51,17 @@ export function CutPreview({
   /** QAのrevisionHintを付けて参照付き編集で再生成 */
   onRegenerateWithHint: (id: string) => void;
   onExportPng: (id: string) => void;
+  /** スケッチの登録・差し替え */
+  onSetSketch: (id: string, file: File) => void;
+  /** スケッチの削除 */
+  onClearSketch: (id: string) => void;
   /** プレビュー画像をクリックで拡大表示 */
   onZoom: (fullUrl: string) => void;
 }) {
   const [fullUrl, setFullUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [sketchUrl, setSketchUrl] = useState<string | null>(null);
+  const sketchFileRef = React.useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let alive = true;
@@ -70,6 +78,21 @@ export function CutPreview({
       alive = false;
     };
   }, [cut?.id, cut?.resultAssetId, cut?.thumbUrl]);
+
+  useEffect(() => {
+    let alive = true;
+    setSketchUrl(null);
+    if (cut?.sketchAssetId) {
+      db.get<ImageAsset>("assets", cut.sketchAssetId).then((a) => {
+        if (alive) setSketchUrl(a?.dataUrl || cut.sketchThumbUrl || null);
+      });
+    } else if (cut?.sketchThumbUrl) {
+      setSketchUrl(cut.sketchThumbUrl);
+    }
+    return () => {
+      alive = false;
+    };
+  }, [cut?.id, cut?.sketchAssetId, cut?.sketchThumbUrl]);
 
   if (!cut) {
     return (
@@ -109,6 +132,83 @@ export function CutPreview({
           </div>
         )}
       </div>
+
+      {/* 手書きスケッチ（レイアウト参照）。結果画像と並べて比較できるように表示する */}
+      {cut.sketchAssetId && (
+        <div className="space-y-1.5 rounded border border-zinc-800 bg-zinc-900/40 p-2">
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              ✏ スケッチ（レイアウト参照）
+            </p>
+            <div className="flex gap-1">
+              <Button
+                variant="ghost"
+                className="px-1.5 py-0.5 text-[10px]"
+                onClick={() => sketchFileRef.current?.click()}
+              >
+                差し替え
+              </Button>
+              <Button
+                variant="danger"
+                className="px-1.5 py-0.5 text-[10px]"
+                onClick={() => onClearSketch(cut.id)}
+              >
+                削除
+              </Button>
+              <input
+                ref={sketchFileRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onSetSketch(cut.id, f);
+                  e.target.value = "";
+                }}
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="h-16 w-28 shrink-0 overflow-hidden rounded border border-zinc-800 bg-zinc-950">
+              {sketchUrl && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={sketchUrl}
+                  alt="スケッチ"
+                  title="クリックで拡大"
+                  className="h-full w-full cursor-zoom-in object-contain"
+                  onClick={() => sketchUrl && onZoom(sketchUrl)}
+                />
+              )}
+            </div>
+            <div className="flex flex-1 flex-col gap-1 text-[11px]">
+              <span className="text-zinc-500">踏襲度</span>
+              <div className="flex gap-1">
+                <button
+                  className={`rounded px-2 py-0.5 transition ${
+                    (cut.sketchStrength ?? "strict") === "strict"
+                      ? "bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/50"
+                      : "bg-zinc-800/60 text-zinc-500 hover:text-zinc-300"
+                  }`}
+                  onClick={() => onUpdate(cut.id, { sketchStrength: "strict" })}
+                >
+                  厳密に再現
+                </button>
+                <button
+                  className={`rounded px-2 py-0.5 transition ${
+                    cut.sketchStrength === "loose"
+                      ? "bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/50"
+                      : "bg-zinc-800/60 text-zinc-500 hover:text-zinc-300"
+                  }`}
+                  onClick={() => onUpdate(cut.id, { sketchStrength: "loose" })}
+                >
+                  ゆるく参考
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ショット設計（アングル/サイズ/構図/ポーズ/背景） */}
       <div className="space-y-1.5 rounded border border-zinc-800 bg-zinc-900/40 p-2">
@@ -272,7 +372,9 @@ export function CutPreview({
             <>
               <p className="text-[11px] text-zinc-400">
                 ト書き一致 {cut.qa.actionMatch}/5 ・ キャラ {cut.qa.characterMatch}/5 ・ スタイル{" "}
-                {cut.qa.styleMatch}/5 ・ 文字混入 {cut.qa.textDetected ? "あり" : "なし"}
+                {cut.qa.styleMatch}/5
+                {cut.qa.layoutMatch != null && <> ・ レイアウト {cut.qa.layoutMatch}/5</>} ・
+                文字混入 {cut.qa.textDetected ? "あり" : "なし"}
                 {qaVerdict(cut.qa) === "retry" && cut.qa.autoRetried && "（自動再生成済）"}
               </p>
               {cut.qa.issues.length > 0 && (

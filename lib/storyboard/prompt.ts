@@ -203,6 +203,22 @@ function buildSettingParagraph(
   return parts.length ? parts.join(" ") : undefined;
 }
 
+/**
+ * レイアウト段落（手書きスケッチを @inN として添付した場合のみ）。Shot段落の直後に置く。
+ * strict = 構図・配置を厳密に再現 / loose = 大まかな参考として扱う
+ */
+function buildLayoutParagraph(
+  sketchInputIndex: number | null | undefined,
+  sketchStrength: Cut["sketchStrength"]
+): string | undefined {
+  if (sketchInputIndex == null) return undefined;
+  const n = sketchInputIndex + 1;
+  if (sketchStrength === "loose") {
+    return `Use input image @in${n} as a loose composition reference: keep the general framing and where the subjects are placed, but you may refine poses, proportions and details.`;
+  }
+  return `Use input image @in${n} as the layout guide: reproduce its composition, camera framing, and the placement, scale and poses of every subject faithfully. It is a rough hand-drawn sketch — keep its framing exactly, but render a finished image in the style described below, adding detail, materials and light.`;
+}
+
 /** 補足段落（ポーズ/背景/感情ヒント）。どれも無ければ段落自体を省く */
 function buildNotesParagraph(cut: Pick<Cut, "poseNote" | "backgroundNote" | "emotionHint">): string | undefined {
   const parts: string[] = [];
@@ -231,6 +247,10 @@ export interface BuildPromptOptions {
   styleText?: string;
   /** トーン参照画像を @refN として添付した場合のインデックス（0始まり） */
   styleRefIndex?: number | null;
+  /** スケッチを入力画像として添付した場合の @inN インデックス（0始まり）。null = 添付なし */
+  sketchInputIndex?: number | null;
+  /** 修正指示の対象（直前の生成画像）を入力画像として添付した場合の @inN インデックス。null = 添付なし */
+  revisionInputIndex?: number | null;
   /** 避けたい要素。"Do not include: ..." として埋め込む */
   negativeText?: string;
   /** 修正指示を含めるか（再生成時） */
@@ -253,6 +273,7 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
   const { cut, characters, referenceKeys, style } = opts;
 
   const shotParagraph = buildShotParagraph(cut);
+  const layoutParagraph = buildLayoutParagraph(opts.sketchInputIndex, cut.sketchStrength);
   const action = cut.promptEn?.trim() || cut.textJa.trim();
 
   const charParts = characters.map((c) => {
@@ -288,6 +309,7 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
 
   const paragraphs = [
     shotParagraph,
+    layoutParagraph,
     action,
     charactersParagraph,
     settingParagraph,
@@ -302,7 +324,11 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
   // editNoteはユーザーの手入力なので上書きせず、両方あれば両方付与する
   const revisionParagraphs: string[] = [];
   if (opts.includeEditNote && cut.editNote?.trim()) {
-    revisionParagraphs.push(`Revision request (apply to the previous image): ${cut.editNote.trim()}`);
+    const target =
+      opts.revisionInputIndex != null
+        ? `input image @in${opts.revisionInputIndex + 1}`
+        : "the previous image";
+    revisionParagraphs.push(`Revision request (apply to ${target}): ${cut.editNote.trim()}`);
   }
   if (opts.extraRevision?.trim()) {
     revisionParagraphs.push(`Fix for this attempt: ${opts.extraRevision.trim()}`);
@@ -358,6 +384,15 @@ export function cutPromptOptions(
   const styleRefIndex =
     p.attachStyleImage !== false && p.styleImageAssetId ? refChars.length : null;
 
+  // スケッチ・修正参照画像の見積もり(実際のアセットロード結果は generateOne 側で上書きする)
+  const sketchInputIndex = cut.sketchAssetId ? 0 : null;
+  const revisionInputIndex =
+    extra?.includeEditNote && cut.editNote?.trim() && cut.resultAssetId
+      ? cut.sketchAssetId
+        ? 1
+        : 0
+      : null;
+
   return {
     cut,
     characters,
@@ -366,6 +401,8 @@ export function cutPromptOptions(
     style: p.stylePreset,
     styleText: projectStyleText(p),
     styleRefIndex,
+    sketchInputIndex,
+    revisionInputIndex,
     negativeText: p.negativePrompt,
     includeEditNote: extra?.includeEditNote,
     emphasizeNoText: extra?.emphasizeNoText,

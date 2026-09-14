@@ -113,6 +113,18 @@ async function assetUrl(assetId?: string): Promise<string | null> {
   return a?.dataUrl ?? null;
 }
 
+/** HEIC/HEIF は canvas/img で扱えないブラウザが多いため、スケッチ登録時に弾く */
+function isUnsupportedSketchImage(file: File): boolean {
+  const type = file.type.toLowerCase();
+  if (type.includes("heic") || type.includes("heif")) return true;
+  return /\.(heic|heif)$/i.test(file.name);
+}
+
+/** ファイル名の自然順（"cut2" < "cut10" になる順）で比較する */
+function naturalCompare(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+}
+
 export default function StoryboardEditor() {
   const [project, setProject] = useState<StoryboardProject>(newProject);
   const [loaded, setLoaded] = useState(false);
@@ -408,19 +420,40 @@ export default function StoryboardEditor() {
         }
         promptOptions.styleRefIndex = styleRefIndex;
 
+        // 入力画像は [スケッチ, 修正対象の直前画像] の順で組み立てる。
+        // cutPromptOptions の見積もりをアセット実ロード結果で上書きする（styleRefIndexと同じ方式）
+        const inputs: string[] = [];
+        if (cut.sketchAssetId) {
+          const sketchUrl = await assetUrl(cut.sketchAssetId);
+          if (sketchUrl) {
+            promptOptions.sketchInputIndex = inputs.length;
+            inputs.push(sketchUrl);
+          } else {
+            promptOptions.sketchInputIndex = null;
+          }
+        } else {
+          promptOptions.sketchInputIndex = null;
+        }
+
+        // 修正指示 or QA指摘がある場合は現画像を入力にして参照付き編集
+        const useRefInput = (opts.useEditNote && cut.editNote?.trim()) || opts.extraRevision?.trim();
+        if (useRefInput && cut.resultAssetId) {
+          const cur = await assetUrl(cut.resultAssetId);
+          if (cur) {
+            promptOptions.revisionInputIndex = inputs.length;
+            inputs.push(cur);
+          } else {
+            promptOptions.revisionInputIndex = null;
+          }
+        } else {
+          promptOptions.revisionInputIndex = null;
+        }
+
         const prompt = buildCutPrompt(promptOptions);
         // 実在人名ガード（送信直前の最終ゲート）
         assertPromptSafe(prompt, p.bannedNames);
 
         updateCut(cutId, { status: "generating", generatedPrompt: prompt, error: undefined });
-
-        // 修正指示 or QA指摘がある場合は現画像を入力にして参照付き編集
-        const inputs: string[] = [];
-        const useRefInput = (opts.useEditNote && cut.editNote?.trim()) || opts.extraRevision?.trim();
-        if (useRefInput && cut.resultAssetId) {
-          const cur = await assetUrl(cut.resultAssetId);
-          if (cur) inputs.push(cur);
-        }
 
         const res = await requestGeneration(
           {
@@ -479,22 +512,28 @@ export default function StoryboardEditor() {
           )
         ).filter((x): x is { key: string; url: string } => !!x);
 
-        // 送信サイズ: 生成画像は長辺1024、キャラ参照は長辺512に縮小
+        // 送信サイズ: 生成画像は長辺1024、キャラ参照は長辺512、スケッチは長辺768に縮小
         const imageThumb = await compressForUpload(resultDataUrl, 1024, 0.85);
         const refThumbsAll = await Promise.all(
           refUrlPairs.map((r) => compressForUpload(r.url, 512, 0.8))
         );
+        const sketchUrl = cut.sketchAssetId ? await assetUrl(cut.sketchAssetId) : null;
+        const sketchThumb = sketchUrl ? await compressForUpload(sketchUrl, 768, 0.8) : null;
 
         // 合計が上限を超える場合は fitUnderLimit で段階縮小し、それでも超えるなら
-        // 参照画像を後ろから落として再試行する
+        // 参照画像を後ろから落として再試行する。スケッチは inputs 側に含めて残す
+        // （落とす優先順位はキャラ参照より後＝スケッチは削らない）
         let keptCount = refThumbsAll.length;
         let fittedImage = imageThumb;
+        let fittedSketch = sketchThumb;
         let fittedRefs: string[] = refThumbsAll;
         for (;;) {
-          const fitted = await fitUnderLimit([imageThumb], refThumbsAll.slice(0, keptCount));
+          const baseInputs = sketchThumb ? [imageThumb, sketchThumb] : [imageThumb];
+          const fitted = await fitUnderLimit(baseInputs, refThumbsAll.slice(0, keptCount));
           fittedImage = fitted.inputs[0] ?? imageThumb;
+          fittedSketch = sketchThumb ? fitted.inputs[1] ?? sketchThumb : null;
           fittedRefs = fitted.refs;
-          const total = payloadLen([fittedImage]) + payloadLen(fittedRefs);
+          const total = payloadLen(fitted.inputs) + payloadLen(fittedRefs);
           if (total <= MAX_UPLOAD_BYTES || keptCount === 0) break;
           keptCount -= 1;
         }
@@ -521,6 +560,7 @@ export default function StoryboardEditor() {
             characters,
             styleLabel: STYLE_PRESETS[p.stylePreset]?.label ?? p.stylePreset,
             expectedCharacterKeys: chars.map((c) => c.key),
+            sketch: fittedSketch ?? undefined,
           }),
         });
         if (!res.ok) {
@@ -819,6 +859,65 @@ export default function StoryboardEditor() {
       updatedAt: Date.now(),
     }));
   }, []);
+
+  // --- 手書きスケッチ（レイアウト参照） ---
+  /** 1カットへスケッチを登録。長辺1600px・品質0.9で圧縮して assets に保存する */
+  const setCutSketch = useCallback(
+    async (cutId: string, file: File) => {
+      if (isUnsupportedSketchImage(file)) {
+        setError(
+          "HEIC/HEIF形式のスケッチ画像には対応していません。PNG/JPEG/WebPをお使いください。"
+        );
+        return;
+      }
+      try {
+        const raw = await fileToDataUrl(file);
+        const dataUrl = await compressForUpload(raw, 1600, 0.9);
+        const assetId = genId("sbsk_");
+        await db.put("assets", { id: assetId, dataUrl });
+        const thumb = await makeThumbnail(dataUrl, 480);
+        const prevId = projectRef.current.cuts.find((c) => c.id === cutId)?.sketchAssetId;
+        if (prevId && prevId !== assetId) await db.del("assets", prevId);
+        updateCut(cutId, { sketchAssetId: assetId, sketchThumbUrl: thumb });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "スケッチの登録に失敗しました");
+      }
+    },
+    [updateCut]
+  );
+
+  const clearCutSketch = useCallback(
+    (cutId: string) => {
+      const cut = projectRef.current.cuts.find((c) => c.id === cutId);
+      if (cut?.sketchAssetId) db.del("assets", cut.sketchAssetId).catch(() => {});
+      updateCut(cutId, { sketchAssetId: undefined, sketchThumbUrl: undefined });
+    },
+    [updateCut]
+  );
+
+  /** 複数ファイルをファイル名の自然順で並べ、スケッチ未登録のカットへ先頭から順に割り当てる */
+  const assignSketches = useCallback(
+    async (files: File[]) => {
+      const rejected = files.filter(isUnsupportedSketchImage);
+      const accepted = files.filter((f) => !isUnsupportedSketchImage(f));
+      if (rejected.length) {
+        setError(
+          `HEIC/HEIF形式は対応していません（${rejected.length}件をスキップしました）。PNG/JPEG/WebPをお使いください。`
+        );
+      }
+      if (!accepted.length) return;
+      const sorted = [...accepted].sort((a, b) => naturalCompare(a.name, b.name));
+      const targets = projectRef.current.cuts.filter((c) => !c.sketchAssetId);
+      const pairs = targets.slice(0, sorted.length).map((cut, i) => ({ cut, file: sorted[i] }));
+      for (const { cut, file } of pairs) {
+        await setCutSketch(cut.id, file);
+      }
+      if (!rejected.length) {
+        setMsg(`スケッチを${pairs.length}カットに割り当てました。`);
+      }
+    },
+    [setCutSketch]
+  );
 
   const updateScene = useCallback((id: string, sp: Partial<Scene>) => {
     setProject((prev) => ({
@@ -1141,6 +1240,10 @@ export default function StoryboardEditor() {
               });
             }}
             onGenerateOne={(id) => generateOne(id).catch(() => {})}
+            onSetSketch={(id, file) => setCutSketch(id, file).catch(() => {})}
+            onClearSketch={clearCutSketch}
+            onAssignSketches={(files) => assignSketches(files).catch(() => {})}
+            onZoom={(url) => setLightbox({ id: "sketch", dataUrl: url, mimeType: "image/png" })}
           />
         </div>
 
@@ -1159,6 +1262,8 @@ export default function StoryboardEditor() {
             onRerunQa={rerunQa}
             onRegenerateWithHint={regenerateWithQaHint}
             onExportPng={exportCutPng}
+            onSetSketch={(id, file) => setCutSketch(id, file).catch(() => {})}
+            onClearSketch={clearCutSketch}
             onZoom={(url) =>
               setLightbox({ id: selectedCut?.id ?? "cut", dataUrl: url, mimeType: "image/png" })
             }
