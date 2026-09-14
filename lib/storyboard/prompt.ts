@@ -1,151 +1,215 @@
-// 生成プロンプトの組み立て（テンプレート + カメラ辞書 + スタイルプリセット）
+// 生成プロンプトの組み立て（自然文テンプレート + カメラ/照明/レンズ辞書 + スタイルプリセット）
+//
+// Gemini/GPT Image は「場面を文章で描写する」「写真用語（レンズ・光・構図）を使う」
+// 「ネガティブはキーワード列挙ではなく意味的に書く」ことを推奨しているため、
+// カンマ連結のタグ列ではなく、空行区切りの段落からなる英語の自然文を組み立てる。
+// 値が無い要素は段落ごと省略する。
 
 import type {
   CameraAngle,
   CharacterSheet,
   Composition,
   Cut,
+  Lens,
+  Lighting,
   Scene,
   ShotSize,
   StoryboardProject,
   StylePresetKey,
 } from "./types";
 
-/** camera enum → 英語フレーズ */
+/** camera enum → 英語フレーズ（ショットサイズの句の後に続ける。"at eye level" 等） */
 export const CAMERA_PHRASES: Record<CameraAngle, string> = {
-  eye_level: "eye level shot",
-  high_angle: "high angle shot, looking down",
-  low_angle: "low angle shot, looking up",
-  top_down: "top-down aerial view",
-  over_shoulder: "over-the-shoulder shot from behind",
-  pov: "first-person POV shot",
-  dutch: "dutch angle shot, tilted frame",
+  eye_level: "at eye level",
+  high_angle: "from a high angle looking down",
+  low_angle: "from a low angle looking up",
+  top_down: "from directly overhead in a top-down aerial view",
+  over_shoulder: "from over the shoulder of a nearby figure",
+  pov: "from a first-person point of view",
+  dutch: "with a tilted dutch angle",
 };
 
-/** shotSize enum → 英語フレーズ */
+/** shotSize enum → 英語フレーズ（冠詞付きの名詞句。文頭で大文字化して使う） */
 export const SHOT_SIZE_PHRASES: Record<ShotSize, string> = {
-  extreme_close_up: "extreme close-up",
-  close_up: "close-up shot",
-  bust: "bust shot, chest-up framing",
-  waist: "medium shot, waist-up framing",
-  full_body: "full body shot",
-  long: "wide long shot",
-  extreme_long: "extreme long shot, distant view",
+  extreme_close_up: "an extreme close-up shot",
+  close_up: "a close-up shot",
+  bust: "a bust shot framed from the chest up",
+  waist: "a waist-up medium shot",
+  full_body: "a full body shot",
+  long: "a wide long shot",
+  extreme_long: "an extreme long shot from a distance",
 };
 
-/** composition enum → 英語フレーズ */
+/** composition enum → 英語フレーズ（"composed with ..." に続ける） */
 export const COMPOSITION_PHRASES: Record<Composition, string> = {
-  rule_of_thirds: "rule of thirds composition",
-  centered: "centered composition",
-  symmetrical: "symmetrical composition",
-  diagonal: "dynamic diagonal composition",
-  negative_space: "composition with generous negative space",
-  frame_in_frame: "frame-within-frame composition",
+  rule_of_thirds: "the rule of thirds",
+  centered: "the subject centered in frame",
+  symmetrical: "a symmetrical composition",
+  diagonal: "a dynamic diagonal composition",
+  negative_space: "generous negative space",
+  frame_in_frame: "a frame-within-a-frame composition",
+};
+
+/** lighting enum → 英語フレーズ（Setting段落で文頭に立てて使う） */
+export const LIGHTING_PHRASES: Record<Lighting, string> = {
+  soft_daylight: "soft diffused natural daylight",
+  golden_hour: "warm golden hour sunlight, long soft shadows",
+  harsh_noon: "hard midday sun, short crisp shadows, high contrast",
+  overcast: "flat overcast light, gentle even shadows",
+  backlit: "strong backlight with rim light outlining the subject",
+  window: "soft window light from one side, quiet interior",
+  night_street: "night scene lit by streetlights and neon, deep shadows",
+  low_key: "low-key dramatic lighting, single key light, dark surroundings",
+  high_key: "bright high-key lighting, airy and clean, minimal shadows",
+};
+
+/** lens enum → 英語フレーズ（Shot段落の末尾に独立した1文として追加する） */
+export const LENS_PHRASES: Record<Lens, string> = {
+  wide_24: "shot on a 24mm wide-angle lens, deep focus, slight perspective stretch",
+  standard_35: "shot on a 35mm lens, natural perspective, most of the scene in focus",
+  normal_50: "shot on a 50mm lens, natural perspective, subject in focus",
+  portrait_85: "shot on an 85mm portrait lens, shallow depth of field, softly blurred background",
+  tele_135: "shot on a 135mm telephoto lens, compressed perspective, background pulled close",
+  macro: "macro lens, extreme close detail, very shallow focus",
 };
 
 export interface StylePreset {
   key: StylePresetKey;
   label: string;
-  suffix: string;
+  /** 描画方法を説明する英語の自然文（Style段落の先頭に置く） */
+  render: string;
   description: string;
 }
 
 /**
- * スタイルプリセット。全プリセット共通で NEGATIVE_SUFFIX を末尾に付与する。
+ * スタイルプリセット。描画方法を自然文で説明する。
  * 実写風プリセットの利用時は肖像権への配慮をUI側で促す
  */
 export const STYLE_PRESETS: Record<StylePresetKey, StylePreset> = {
   pencil_rough: {
     key: "pencil_rough",
     label: "鉛筆ラフ（デフォルト）",
-    suffix:
-      "storyboard sketch, rough pencil drawing, monochrome, cinematic composition, 16:9",
+    render:
+      "Rendered as a rough pencil storyboard sketch: monochrome graphite, loose confident linework, minimal hatching for shadow, the kind of frame a director draws for a shooting board.",
     description: "コンテとして最も読みやすい",
   },
   gray_cinematic: {
     key: "gray_cinematic",
     label: "グレー・シネマティック",
-    suffix: "grayscale digital painting, film storyboard style, soft shading, 16:9",
+    render:
+      "Rendered as a grayscale digital painting in a film storyboard style: soft tonal shading, clear silhouettes, cinematic value structure.",
     description: "映画コンテ風のグレースケール",
   },
   anime_layout: {
     key: "anime_layout",
     label: "アニメレイアウト",
-    suffix: "anime keyframe rough, clean line art, minimal shading, 16:9",
+    render:
+      "Rendered as an anime key-frame layout: clean line art, minimal flat shading, production-drawing feel.",
     description: "アニメ原画ラフ風",
   },
   ink_manga: {
     key: "ink_manga",
     label: "漫画ペン画",
-    suffix:
-      "black and white manga ink drawing, screentone shading, dynamic linework, high contrast, 16:9",
+    render:
+      "Rendered as black-and-white manga ink art: confident pen lines, screentone shading, high contrast.",
     description: "モノクロ漫画・ペン画風",
   },
   watercolor: {
     key: "watercolor",
     label: "水彩",
-    suffix:
-      "soft watercolor illustration, gentle color bleeding, paper texture, airy light, 16:9",
+    render:
+      "Rendered as a soft watercolor illustration: gentle color bleeding, visible paper texture, airy light.",
     description: "やわらかい水彩イラスト",
   },
   flat_vector: {
     key: "flat_vector",
     label: "フラットイラスト",
-    suffix:
-      "flat vector illustration, bold simple shapes, limited color palette, clean composition, 16:9",
+    render:
+      "Rendered as a flat vector illustration: bold simple shapes, limited palette, clean geometric composition.",
     description: "フラットデザイン・ベクター風",
   },
   rich_color: {
     key: "rich_color",
     label: "質感フルカラー",
-    suffix:
-      "high quality full color illustration, rich textures, painterly light and shadow, detailed background, cinematic composition, 16:9",
+    render:
+      "Rendered as a fully colored, richly textured illustration: painterly light and shadow, detailed background, finished-quality artwork.",
     description: "質感のあるフルカラーイラスト（仕上げ寄り）",
   },
   cg_3d: {
     key: "cg_3d",
     label: "3DCG",
-    suffix:
-      "3D CG render, soft global illumination, physically based materials, cinematic lighting, 16:9",
+    render:
+      "Rendered as a 3D CG still: soft global illumination, physically based materials, cinematic lighting.",
     description: "3DCGレンダリング風",
   },
   cinematic_photo: {
     key: "cinematic_photo",
     label: "シネマティック実写風",
-    suffix:
-      "photorealistic cinematic film still, natural film lighting, shallow depth of field, high detail, color graded, 16:9",
+    render:
+      "Rendered as a photorealistic cinematic film still: natural film lighting, subtle color grading, high detail.",
     description: "実写映画のスチル風（肖像権に配慮して使用）",
   },
 };
 
 export const DEFAULT_STYLE: StylePresetKey = "pencil_rough";
 
-/** 全プリセット共通の禁止事項（文字焼き込み防止） */
-export const NEGATIVE_SUFFIX = "no text, no letters, no logo, no watermark";
+/** 制約段落（文字焼き込み防止）の既定文 */
+export const NO_TEXT_CONSTRAINT =
+  "The image contains no text, letters, captions, subtitles, logos or watermarks.";
 
 /** 文字混入時のリカバリ用・強調版 */
 export const NO_TEXT_EMPHASIS =
-  "IMPORTANT: absolutely no text, no letters, no captions, no subtitles, no logos, no watermarks anywhere in the image";
+  "IMPORTANT: the image must contain absolutely no text, letters, captions, subtitles, logos or watermarks anywhere.";
 
-/** 高画質化プロンプトの既定値（プロジェクト単位で編集可） */
-export const DEFAULT_QUALITY_PROMPT =
-  "masterpiece, best quality, highly detailed, sharp focus, professional lighting";
-
-/** 避けたい要素の既定値（プロジェクト単位で編集可） */
-export const DEFAULT_NEGATIVE_PROMPT =
-  "blurry, low resolution, deformed anatomy, broken hands, extra fingers, distorted face";
+function capitalize(s: string): string {
+  return s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
 
 /**
- * キャラクターのプロンプト句を作る。
+ * キャラクターのプロンプト文を作る。
  * 表示名（実名の可能性がある）は使わず、キー + 記述文のみを使う。
  * 参照画像を添付する場合は @refN 対応を明示する（/api/generate が @refN ラベルを付ける）
  */
-export function characterPhrase(c: CharacterSheet, refIndex: number | null): string {
+export function characterSentence(c: CharacterSheet, refIndex: number | null): string {
   const desc = c.descriptionEn?.trim() || c.descriptionJa.trim() || c.key;
+  const base = `${c.key} is ${desc}.`;
   if (refIndex !== null) {
-    return `${c.key} (@ref${refIndex + 1}: ${desc} — keep the same face, hairstyle and outfit as @ref${refIndex + 1})`;
+    return `${base} Keep exactly the same face, hairstyle and outfit as reference image @ref${refIndex + 1}.`;
   }
-  return `${c.key} (${desc})`;
+  return base;
+}
+
+/** ショット段落（サイズ/アングル/構図/レンズ）を組み立てる。全未指定なら標準の目線ミディアム */
+function buildShotParagraph(cut: Pick<Cut, "shotSize" | "camera" | "composition" | "lens">): string {
+  const sizePhrase = cut.shotSize ? SHOT_SIZE_PHRASES[cut.shotSize] : "a medium shot";
+  const cameraPhrase = cut.camera ? CAMERA_PHRASES[cut.camera] : "at eye level";
+  let sentence = `${capitalize(sizePhrase)} ${cameraPhrase}`;
+  if (cut.composition) sentence += `, composed with ${COMPOSITION_PHRASES[cut.composition]}`;
+  sentence += ".";
+  if (cut.lens) sentence += ` ${capitalize(LENS_PHRASES[cut.lens])}.`;
+  return sentence;
+}
+
+/** 舞台設定段落（シーン規定/場所/時間帯/照明）。どれも無ければ段落自体を省く */
+function buildSettingParagraph(
+  cut: Pick<Cut, "location" | "timeOfDay" | "lighting">,
+  sceneText?: string
+): string | undefined {
+  const parts: string[] = [];
+  if (sceneText) parts.push(`Setting: ${sceneText}.`);
+  const locTime = [cut.location?.trim(), cut.timeOfDay?.trim()].filter(Boolean).join(", ");
+  if (locTime) parts.push(`Location: ${locTime}.`);
+  if (cut.lighting) parts.push(`${capitalize(LIGHTING_PHRASES[cut.lighting])}.`);
+  return parts.length ? parts.join(" ") : undefined;
+}
+
+/** 補足段落（ポーズ/背景/感情ヒント）。どれも無ければ段落自体を省く */
+function buildNotesParagraph(cut: Pick<Cut, "poseNote" | "backgroundNote" | "emotionHint">): string | undefined {
+  const parts: string[] = [];
+  if (cut.poseNote?.trim()) parts.push(`Pose: ${cut.poseNote.trim()}.`);
+  if (cut.backgroundNote?.trim()) parts.push(`Background: ${cut.backgroundNote.trim()}.`);
+  if (cut.emotionHint?.trim()) parts.push(`Mood: ${cut.emotionHint.trim()}.`);
+  return parts.length ? parts.join(" ") : undefined;
 }
 
 export interface BuildPromptOptions {
@@ -167,9 +231,7 @@ export interface BuildPromptOptions {
   styleText?: string;
   /** トーン参照画像を @refN として添付した場合のインデックス（0始まり） */
   styleRefIndex?: number | null;
-  /** 高画質化・クオリティアップのプロンプト（全カット共通） */
-  qualityText?: string;
-  /** 避けたい要素。avoid: として埋め込む */
+  /** 避けたい要素。"Do not include: ..." として埋め込む */
   negativeText?: string;
   /** 修正指示を含めるか（再生成時） */
   includeEditNote?: boolean;
@@ -179,53 +241,58 @@ export interface BuildPromptOptions {
 
 /**
  * 最終プロンプトを組み立てる。
- * テンプレート: {camera}, {scene/action}, {characters}, {location}, {time}, {style}, {negative}
+ * 段落を空行(\n\n)で区切った英語の自然文にする。空の要素は段落ごと省略する。
  * 英訳（promptEn）が未取得の場合はト書き原文で代替する（Geminiは日本語も解釈可能）
  */
 export function buildCutPrompt(opts: BuildPromptOptions): string {
   const { cut, characters, referenceKeys, style } = opts;
-  // ショット設計（アングル/サイズ/構図）。全て未指定なら標準の目線ミディアム
-  const shotParts = [
-    cut.camera ? CAMERA_PHRASES[cut.camera] : undefined,
-    cut.shotSize ? SHOT_SIZE_PHRASES[cut.shotSize] : undefined,
-    cut.composition ? COMPOSITION_PHRASES[cut.composition] : undefined,
-  ].filter((s): s is string => !!s);
-  const shot = shotParts.length ? shotParts.join(", ") : "eye level medium shot";
+
+  const shotParagraph = buildShotParagraph(cut);
   const action = cut.promptEn?.trim() || cut.textJa.trim();
-  // シーン共通の舞台設定（英訳があれば英語、なければ原文で代替）
-  const sceneText = opts.scene
-    ? (opts.scene.sceneEn?.trim() || opts.scene.descriptionJa?.trim() || undefined)
-    : undefined;
 
   const charParts = characters.map((c) => {
     const refIndex = referenceKeys.indexOf(c.key);
-    return characterPhrase(c, refIndex >= 0 ? refIndex : null);
+    return characterSentence(c, refIndex >= 0 ? refIndex : null);
   });
+  const charactersParagraph = charParts.length ? charParts.join(" ") : undefined;
 
-  const styleRef =
-    opts.styleRefIndex != null
-      ? `match the overall tone, color palette, texture and rendering style of @ref${opts.styleRefIndex + 1} (style reference only, do not copy its subjects)`
-      : undefined;
+  const sceneText = opts.scene
+    ? opts.scene.sceneEn?.trim() || opts.scene.descriptionJa?.trim() || undefined
+    : undefined;
+  const settingParagraph = buildSettingParagraph(cut, sceneText);
+  const notesParagraph = buildNotesParagraph(cut);
 
-  const parts = [
-    shot,
+  const preset = STYLE_PRESETS[style];
+  const styleParts = [preset.render];
+  // styleText はカンマ区切りの句の連結（文の体裁ではない）ため、
+  // 末尾の句読点・空白を落としたうえで1つの完結した文に包む
+  const styleTextSentence = opts.styleText?.trim().replace(/[.\s]+$/, "");
+  if (styleTextSentence) styleParts.push(`Overall look: ${styleTextSentence}.`);
+  if (opts.styleRefIndex != null) {
+    styleParts.push(
+      `Match the overall tone, palette, texture and rendering of reference image @ref${opts.styleRefIndex + 1} (use it only as a style reference; do not copy its subjects).`
+    );
+  }
+  const styleParagraph = styleParts.join(" ");
+
+  const constraintParts = [opts.emphasizeNoText ? NO_TEXT_EMPHASIS : NO_TEXT_CONSTRAINT];
+  if (opts.negativeText?.trim()) {
+    constraintParts.push(`Do not include: ${opts.negativeText.trim()}.`);
+  }
+  const constraintsParagraph = constraintParts.join(" ");
+
+  const paragraphs = [
+    shotParagraph,
     action,
-    ...charParts,
-    sceneText ? `setting: ${sceneText}` : undefined,
-    cut.location?.trim(),
-    cut.timeOfDay?.trim(),
-    cut.emotionHint?.trim(),
-    cut.poseNote?.trim() ? `subject pose: ${cut.poseNote.trim()}` : undefined,
-    cut.backgroundNote?.trim() ? `background: ${cut.backgroundNote.trim()}` : undefined,
-    opts.styleText?.trim(),
-    styleRef,
-    STYLE_PRESETS[style].suffix,
-    opts.qualityText?.trim(),
-    opts.negativeText?.trim() ? `avoid: ${opts.negativeText.trim()}` : undefined,
-    opts.emphasizeNoText ? NO_TEXT_EMPHASIS : NEGATIVE_SUFFIX,
-  ].filter((p): p is string => !!p);
+    charactersParagraph,
+    settingParagraph,
+    notesParagraph,
+    styleParagraph,
+    constraintsParagraph,
+  ].filter((p): p is string => !!p && p.trim().length > 0);
 
-  let prompt = parts.join(", ");
+  let prompt = paragraphs.join("\n\n");
+
   if (opts.includeEditNote && cut.editNote?.trim()) {
     prompt += `\n\nRevision request (apply to the previous image): ${cut.editNote.trim()}`;
   }
@@ -237,21 +304,19 @@ export function buildCharacterSheetPrompt(
   c: CharacterSheet,
   style: StylePresetKey,
   styleText?: string,
-  qualityText?: string,
   negativeText?: string
 ): string {
   const desc = c.descriptionEn?.trim() || c.descriptionJa.trim() || c.key;
-  return [
-    "character reference sheet, single character, full body standing pose, front view, neutral expression, plain white background",
-    desc,
+  const preset = STYLE_PRESETS[style];
+  const parts = [
+    "A character reference sheet of a single character: full body, standing, front view, neutral expression, plain white background.",
+    `${desc}.`,
     styleText?.trim(),
-    STYLE_PRESETS[style].suffix.replace(", 16:9", ""),
-    qualityText?.trim(),
-    negativeText?.trim() ? `avoid: ${negativeText.trim()}` : undefined,
-    NEGATIVE_SUFFIX,
-  ]
-    .filter((p): p is string => !!p)
-    .join(", ");
+    preset.render,
+    negativeText?.trim() ? `Do not include: ${negativeText.trim()}.` : undefined,
+    NO_TEXT_CONSTRAINT,
+  ].filter((p): p is string => !!p);
+  return parts.join(" ");
 }
 
 /** プロジェクト共通のスタイル記述（言語化済みトーン + 自由記述） */
@@ -287,7 +352,6 @@ export function cutPromptOptions(
     style: p.stylePreset,
     styleText: projectStyleText(p),
     styleRefIndex,
-    qualityText: p.qualityPrompt,
     negativeText: p.negativePrompt,
     includeEditNote: extra?.includeEditNote,
     emphasizeNoText: extra?.emphasizeNoText,
@@ -307,20 +371,17 @@ export function buildStandingFromFacePrompt(
   c: CharacterSheet,
   style: StylePresetKey,
   styleText?: string,
-  qualityText?: string,
   negativeText?: string
 ): string {
   const desc = c.descriptionEn?.trim() || c.descriptionJa.trim() || "";
-  return [
-    "using the person in input image @in1, draw the exact same person (same face, same hairstyle) as a character reference sheet",
-    "single character, full body standing pose, front view, neutral expression, plain white background",
-    desc,
+  const preset = STYLE_PRESETS[style];
+  const parts = [
+    "Using the person in input image @in1, draw the exact same person (same face, same hairstyle) as a character reference sheet: full body, standing, front view, neutral expression, plain white background.",
+    desc ? `${desc}.` : undefined,
     styleText?.trim(),
-    STYLE_PRESETS[style].suffix.replace(", 16:9", ""),
-    qualityText?.trim(),
-    negativeText?.trim() ? `avoid: ${negativeText.trim()}` : undefined,
-    NEGATIVE_SUFFIX,
-  ]
-    .filter((p): p is string => !!p)
-    .join(", ");
+    preset.render,
+    negativeText?.trim() ? `Do not include: ${negativeText.trim()}.` : undefined,
+    NO_TEXT_CONSTRAINT,
+  ].filter((p): p is string => !!p);
+  return parts.join(" ");
 }

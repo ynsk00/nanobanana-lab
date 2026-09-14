@@ -58,6 +58,48 @@ export const COMPOSITION_LABELS: Record<Composition, string> = {
   frame_in_frame: "額縁構図",
 };
 
+/** 照明。ト書きの時間帯・光の手がかりから自動推定し、手動修正できる */
+export type Lighting =
+  | "soft_daylight"
+  | "golden_hour"
+  | "harsh_noon"
+  | "overcast"
+  | "backlit"
+  | "window"
+  | "night_street"
+  | "low_key"
+  | "high_key";
+
+export const LIGHTING_LABELS: Record<Lighting, string> = {
+  soft_daylight: "柔らかい自然光",
+  golden_hour: "夕方・朝の斜光",
+  harsh_noon: "真昼の硬い光",
+  overcast: "曇天のフラット光",
+  backlit: "逆光・リムライト",
+  window: "室内の窓明かり",
+  night_street: "夜の街灯・ネオン",
+  low_key: "ローキー（暗く劇的）",
+  high_key: "ハイキー（明るく軽い）",
+};
+
+/** レンズ・被写界深度。創作判断のため自動推定はしない */
+export type Lens =
+  | "wide_24"
+  | "standard_35"
+  | "normal_50"
+  | "portrait_85"
+  | "tele_135"
+  | "macro";
+
+export const LENS_LABELS: Record<Lens, string> = {
+  wide_24: "24mm 広角・深い被写界深度",
+  standard_35: "35mm 標準広角",
+  normal_50: "50mm 標準",
+  portrait_85: "85mm 中望遠・浅い被写界深度",
+  tele_135: "135mm 望遠・圧縮効果",
+  macro: "マクロ",
+};
+
 /**
  * オーバーレイの種類。
  * - NA: ナレーション（青字で画像上に重ねる）
@@ -112,9 +154,13 @@ export interface Cut {
   shotSize?: ShotSize | null;
   /** 構図。null = 未指定 */
   composition?: Composition | null;
-  /** 被写体のポーズ指定（自由記述。プロンプトに subject pose: として付与） */
+  /** 照明。null = 未指定（assistがト書きの手がかりから推定する場合がある） */
+  lighting?: Lighting | null;
+  /** レンズ・被写界深度。null = 未指定（創作判断のため自動推定はしない） */
+  lens?: Lens | null;
+  /** 被写体のポーズ指定（自由記述。プロンプトに Pose: として付与） */
   poseNote?: string;
-  /** 背景の指定（自由記述。プロンプトに background: として付与） */
+  /** 背景の指定（自由記述。プロンプトに Background: として付与） */
   backgroundNote?: string;
   /** 所属シーン（StoryboardProject.scenes の id）。無所属も可 */
   sceneId?: string;
@@ -188,9 +234,7 @@ export interface StoryboardProject {
   styleImageEn?: string;
   /** トーン参照画像を参照画像として毎カットに添付するか（既定: true） */
   attachStyleImage?: boolean;
-  /** 高画質化・クオリティアップ用のプロンプト（全生成に付与。編集可） */
-  qualityPrompt?: string;
-  /** 避けたい要素（ネガティブ）。Geminiにはnegative_promptパラメータが無いため "avoid: ..." としてプロンプトに埋め込む */
+  /** 避けたい要素（ネガティブ）。Geminiにはnegative_promptパラメータが無いため "Do not include: ..." としてプロンプトに埋め込む */
   negativePrompt?: string;
   modelKey: string;
   /** Google用: 出力解像度 ("1K"/"2K"/"4K")。未設定は "1K" 扱い。対応モデルのみ有効 */

@@ -10,7 +10,7 @@ import {
   findNameViolations,
   replaceNames,
 } from "../guard";
-import { buildCutPrompt, buildCharacterSheetPrompt, NEGATIVE_SUFFIX } from "../prompt";
+import { buildCutPrompt, buildCharacterSheetPrompt, NO_TEXT_CONSTRAINT } from "../prompt";
 import type { CharacterSheet, Cut } from "../types";
 
 const BANNED = ["山田太郎", "Taro Yamada", "有名タレントX"];
@@ -74,13 +74,14 @@ describe("buildCutPrompt: 人名がプロンプトへ渡らない", () => {
     expect(findNameViolations(prompt, BANNED)).toEqual([]);
     expect(prompt).toContain("MAN_A");
     expect(prompt).toContain("@ref1");
-    expect(prompt).toContain(NEGATIVE_SUFFIX);
+    expect(prompt).toContain(NO_TEXT_CONSTRAINT);
   });
 
   it("キャラシート生成プロンプトにも表示名は含まれない", () => {
     const prompt = buildCharacterSheetPrompt(MAN_A, "pencil_rough");
     expect(prompt).not.toContain("山田太郎");
-    expect(prompt).toContain("full body standing pose");
+    expect(prompt).toContain("character reference sheet");
+    expect(prompt).toContain("full body, standing");
   });
 
   it("英訳前のフォールバック（ト書き原文）に人名が残っていればガードが遮断する", () => {
@@ -97,7 +98,7 @@ describe("buildCutPrompt: 人名がプロンプトへ渡らない", () => {
 });
 
 describe("スタイルプリセット", () => {
-  it("全プリセットの末尾に no text 系サフィックスが付与される", () => {
+  it("全プリセットの末尾に no text 系の制約文が付与される", () => {
     for (const style of [
       "pencil_rough",
       "gray_cinematic",
@@ -111,8 +112,9 @@ describe("スタイルプリセット", () => {
         referenceKeys: [],
         style,
       });
-      expect(prompt).toContain("no text, no letters, no logo, no watermark");
-      expect(prompt).toContain("16:9");
+      expect(prompt).toContain(NO_TEXT_CONSTRAINT);
+      // 比率はAPI側で指定するためプロンプト本文には含めない
+      expect(prompt).not.toContain("16:9");
     }
   });
 });
@@ -142,8 +144,8 @@ describe("共通スタイル設定（全カットに同一反映）", () => {
       styleRefIndex: 1,
     });
     expect(prompt).toContain("@ref1"); // キャラ参照
-    expect(prompt).toContain("rendering style of @ref2"); // トーン参照
-    expect(prompt).toContain("style reference only");
+    expect(prompt).toContain("rendering of reference image @ref2"); // トーン参照
+    expect(prompt).toContain("use it only as a style reference");
   });
 
   it("シーン規定が同一シーンの全カットへ共通反映される", () => {
@@ -160,7 +162,7 @@ describe("共通スタイル設定（全カットに同一反映）", () => {
     const prompts = cuts.map((cut) =>
       buildCutPrompt({ cut, characters: [], referenceKeys: [], scene, style: "pencil_rough" })
     );
-    for (const p of prompts) expect(p).toContain(`setting: ${scene.sceneEn}`);
+    for (const p of prompts) expect(p).toContain(`Setting: ${scene.sceneEn}`);
   });
 
   it("シーン規定にも人名ガードが効く（英訳前の原文フォールバック）", () => {
@@ -175,27 +177,7 @@ describe("共通スタイル設定（全カットに同一反映）", () => {
     expect(() => assertPromptSafe(prompt, BANNED)).toThrow(NameGuardError);
   });
 
-  it("高画質化プロンプト(qualityText)が全カットへ共通付与される", () => {
-    const quality = "masterpiece, best quality, highly detailed";
-    const cuts = [
-      makeCut({ id: "c1", promptEn: "a man meets a cat" }),
-      makeCut({ id: "c2", promptEn: "a man crouching" }),
-    ];
-    for (const cut of cuts) {
-      const p = buildCutPrompt({
-        cut,
-        characters: [],
-        referenceKeys: [],
-        style: "rich_color",
-        qualityText: quality,
-      });
-      expect(p).toContain(quality);
-      // no text 系サフィックスより前に入る（末尾の禁止事項は維持）
-      expect(p.indexOf(quality)).toBeLessThan(p.indexOf("no text"));
-    }
-  });
-
-  it("避けたい要素(negativeText)が avoid: として埋め込まれる", () => {
+  it("避けたい要素(negativeText)が Do not include: として埋め込まれる", () => {
     const p = buildCutPrompt({
       cut: makeCut({ promptEn: "a man meets a cat" }),
       characters: [],
@@ -203,8 +185,8 @@ describe("共通スタイル設定（全カットに同一反映）", () => {
       style: "pencil_rough",
       negativeText: "blurry, deformed hands",
     });
-    expect(p).toContain("avoid: blurry, deformed hands");
-    expect(p.indexOf("avoid:")).toBeLessThan(p.indexOf("no text"));
+    expect(p).toContain("Do not include: blurry, deformed hands.");
+    expect(p.indexOf("Do not include:")).toBeGreaterThan(p.indexOf(NO_TEXT_CONSTRAINT));
   });
 
   it("ショット設計(アングル/サイズ/構図/ポーズ/背景)がプロンプトへ反映される", () => {
@@ -221,11 +203,11 @@ describe("共通スタイル設定（全カットに同一反映）", () => {
       referenceKeys: [],
       style: "pencil_rough",
     });
-    expect(p).toContain("low angle shot");
     expect(p).toContain("close-up shot");
-    expect(p).toContain("rule of thirds composition");
-    expect(p).toContain("subject pose: crouching, reaching out to a cat");
-    expect(p).toContain("background: block wall and morning sun");
+    expect(p).toContain("a low angle looking up");
+    expect(p).toContain("composed with the rule of thirds");
+    expect(p).toContain("Pose: crouching, reaching out to a cat.");
+    expect(p).toContain("Background: block wall and morning sun.");
   });
 
   it("styleText にも人名ガードが効く", () => {

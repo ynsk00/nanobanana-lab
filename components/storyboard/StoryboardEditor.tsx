@@ -20,8 +20,6 @@ import { downloadBlob, fileToDataUrl, genId, makeThumbnail } from "@/lib/image";
 import type { ImageAsset } from "@/lib/types";
 import { dedupeCutTexts, mergeWithPrevious, parseScript, splitCut } from "@/lib/storyboard/parse";
 import {
-  DEFAULT_NEGATIVE_PROMPT,
-  DEFAULT_QUALITY_PROMPT,
   DEFAULT_STYLE,
   buildCharacterSheetPrompt,
   buildCutPrompt,
@@ -45,6 +43,10 @@ import type { AssistResponse } from "@/app/api/storyboard/assist/route";
 import type { StyleResponse } from "@/app/api/storyboard/style/route";
 
 const PROJECT_ID = "sb_default";
+
+/** 旧デフォルトのnegativePrompt（このタグ列がプロンプトに残り続けるのを読込時にリセットする） */
+const OLD_DEFAULT_NEGATIVE_PROMPT =
+  "blurry, low resolution, deformed anatomy, broken hands, extra fingers, distorted face";
 
 /** 16:9 に対応する Google モデルのみ（絵コンテは 16:9 固定） */
 const SB_MODELS = Object.values(MODELS).filter(
@@ -76,8 +78,7 @@ function newProject(): StoryboardProject {
     scenes: [],
     characters: [],
     stylePreset: DEFAULT_STYLE,
-    qualityPrompt: DEFAULT_QUALITY_PROMPT,
-    negativePrompt: DEFAULT_NEGATIVE_PROMPT,
+    negativePrompt: "",
     modelKey: SB_MODELS[0]?.key ?? "nano-banana-2",
     bannedNames: [],
     createdAt: Date.now(),
@@ -146,9 +147,12 @@ export default function StoryboardEditor() {
             ? { ...c, status: c.resultAssetId ? "done" : "draft" }
             : c
         );
-        // 旧プロジェクトへの新フィールド補完
-        if (p.qualityPrompt === undefined) p.qualityPrompt = DEFAULT_QUALITY_PROMPT;
-        if (p.negativePrompt === undefined) p.negativePrompt = DEFAULT_NEGATIVE_PROMPT;
+        // 旧プロジェクトへの新フィールド補完。
+        // qualityPrompt は型から削除済み（IndexedDBに残っていても無視される）。
+        // 旧既定のnegativePrompt（タグ列）が残っていれば新方式（既定 ""）にリセットする
+        if (p.negativePrompt === undefined || p.negativePrompt === OLD_DEFAULT_NEGATIVE_PROMPT) {
+          p.negativePrompt = "";
+        }
         // 旧enum(サイズ系がcameraに入っていた)からの移行
         const sizeMigration: Record<string, string> = {
           close_up: "close_up", bust_shot: "bust", full_shot: "full_body", wide: "long",
@@ -324,6 +328,7 @@ export default function StoryboardEditor() {
             timeOfDay: r.timeOfDay ?? c.timeOfDay,
             camera: c.camera ?? r.camera ?? null,
             shotSize: c.shotSize ?? r.shotSize ?? null,
+            lighting: c.lighting ?? r.lighting ?? null,
           };
         });
         const characters = prev.characters.map((c) => {
@@ -493,7 +498,6 @@ export default function StoryboardEditor() {
           c,
           p.stylePreset,
           projectStyleText(p),
-          p.qualityPrompt,
           p.negativePrompt
         );
         assertPromptSafe(prompt, p.bannedNames);
@@ -548,7 +552,6 @@ export default function StoryboardEditor() {
           c,
           p.stylePreset,
           projectStyleText(p),
-          p.qualityPrompt,
           p.negativePrompt
         );
         assertPromptSafe(prompt, p.bannedNames);

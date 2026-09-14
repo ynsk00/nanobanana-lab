@@ -207,7 +207,7 @@ export function BottomDock({
           </span>
         </div>
         <div className="grid grid-cols-3 content-start gap-x-2 gap-y-1 p-2">
-          {/* col1: プリセット + 高画質化 */}
+          {/* col1: プリセット */}
           <div>
             <select
               value={project.stylePreset}
@@ -226,27 +226,17 @@ export function BottomDock({
                 ⚠ 実写風は肖像権に配慮して使用
               </p>
             )}
-            <label className="mb-0.5 mt-1 block text-[10px] text-zinc-500">
-              高画質化（quality）
-            </label>
-            <textarea
-              value={project.qualityPrompt ?? ""}
-              onChange={(e) => onPatch({ qualityPrompt: e.target.value })}
-              placeholder="masterpiece, best quality, highly detailed, ..."
-              rows={2}
-              className="w-full resize-none rounded border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-[10px]"
-            />
           </div>
 
-          {/* col2: 避けたい要素 + 共通トーン */}
+          {/* col2: 含めたくないもの + 共通トーン */}
           <div>
             <label className="mb-0.5 block text-[10px] text-zinc-500">
-              避けたい要素（negative）
+              含めたくないもの（任意）
             </label>
             <textarea
               value={project.negativePrompt ?? ""}
               onChange={(e) => onPatch({ negativePrompt: e.target.value })}
-              placeholder="blurry, deformed hands, ..."
+              placeholder="例: umbrellas, cars, crowds"
               rows={2}
               className="w-full resize-none rounded border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-[10px]"
             />

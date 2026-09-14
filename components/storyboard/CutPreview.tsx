@@ -9,10 +9,14 @@ import type { ImageAsset } from "@/lib/types";
 import {
   CAMERA_LABELS,
   COMPOSITION_LABELS,
+  LENS_LABELS,
+  LIGHTING_LABELS,
   SHOT_SIZE_LABELS,
   type CameraAngle,
   type Composition,
   type Cut,
+  type Lens,
+  type Lighting,
   type ShotSize,
 } from "@/lib/storyboard/types";
 
@@ -156,6 +160,44 @@ export function CutPreview({
             {(Object.keys(COMPOSITION_LABELS) as Composition[]).map((k) => (
               <option key={k} value={k}>
                 {COMPOSITION_LABELS[k]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex gap-1.5">
+          <select
+            value={cut.lighting ?? ""}
+            onChange={(e) =>
+              onUpdate(cut.id, {
+                lighting: (e.target.value || null) as Lighting | null,
+                generatedPrompt: undefined,
+              })
+            }
+            className="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px]"
+            title="照明"
+          >
+            <option value="">照明: 指定なし</option>
+            {(Object.keys(LIGHTING_LABELS) as Lighting[]).map((k) => (
+              <option key={k} value={k}>
+                {LIGHTING_LABELS[k]}
+              </option>
+            ))}
+          </select>
+          <select
+            value={cut.lens ?? ""}
+            onChange={(e) =>
+              onUpdate(cut.id, {
+                lens: (e.target.value || null) as Lens | null,
+                generatedPrompt: undefined,
+              })
+            }
+            className="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-[11px]"
+            title="レンズ"
+          >
+            <option value="">レンズ: 指定なし</option>
+            {(Object.keys(LENS_LABELS) as Lens[]).map((k) => (
+              <option key={k} value={k}>
+                {LENS_LABELS[k]}
               </option>
             ))}
           </select>

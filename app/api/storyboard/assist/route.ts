@@ -37,6 +37,18 @@ const VALID_SIZES = [
   "extreme_long",
 ] as const;
 
+const VALID_LIGHTINGS = [
+  "soft_daylight",
+  "golden_hour",
+  "harsh_noon",
+  "overcast",
+  "backlit",
+  "window",
+  "night_street",
+  "low_key",
+  "high_key",
+] as const;
+
 export interface AssistCutResult {
   id: string;
   actionEn: string;
@@ -44,6 +56,8 @@ export interface AssistCutResult {
   timeOfDay?: string;
   camera?: (typeof VALID_CAMERAS)[number];
   shotSize?: (typeof VALID_SIZES)[number];
+  /** 照明。ト書きに時間帯や光の手がかりがある場合のみ推定する（レンズは創作判断のため推定しない） */
+  lighting?: (typeof VALID_LIGHTINGS)[number];
   realNames?: string[];
 }
 
@@ -90,19 +104,21 @@ export async function POST(req: NextRequest) {
 
 ## タスク
 1. 各ト書き(cuts)を、画像生成プロンプト用の英語に**膨らませて**変換する:
-   - sceneDescription（共通のシーン規定）を文脈として踏まえ、構図・被写体の動き・視線・前景/背景・光を補って「1枚の画」として成立する記述にする（名詞句と現在分詞中心、45語以内）
+   - sceneDescription（共通のシーン規定）を文脈として踏まえ、構図・被写体の動き・視線・前景/背景・光を補って「1枚の画」として成立する記述にする
+     （現在形の完全な英文1〜2文、60語以内。1枚の静止した瞬間として、誰が・何をしている・どこを見ている・前景/背景に何があるかを描写する）
    - 原文に無い出来事・小道具・人物は発明しない（演出的な補完のみ）
    - 固有名詞・ブランド名・文字表示(テロップ等)に関する記述は除外する
    - 実在の人名は絶対に英訳文へ含めない（一般的な記述に置き換える）
    - location(場所)とtimeOfDay(時間帯)を英語で抽出する(不明なら省略)
    - カメラ画角が読み取れる場合のみ camera(アングル)を top_down/high_angle/eye_level/low_angle/over_shoulder/pov/dutch から、shotSize(サイズ)を extreme_close_up/close_up/bust/waist/full_body/long/extreme_long から選ぶ
+   - ト書きに時間帯や光の手がかりがある場合のみ lighting(照明)を soft_daylight/golden_hour/harsh_noon/overcast/backlit/window/night_street/low_key/high_key から選ぶ。手がかりが無ければ省略する（lensは創作判断のため推定しない）
 2. 各シーン規定(scenes)を、シーン内の全カットの背景描写として再利用できる英語(25語以内。場所・時間帯・天候・雰囲気)に変換する
 3. 各キャラクター記述(characters)を画像生成プロンプト用の英語(20語以内)に変換する
 4. 入力テキスト全体から、実在の人物名(タレント・俳優・著名人)や実在作品・ブランド名を検出し realNames に列挙する（架空の記号的な名前 MAN_A 等や一般名詞「男」「猫」は含めない）
 
 ## 出力形式(JSONのみ、説明文なし)
 {
-  "cuts": [{"id": "...", "actionEn": "...", "location": "...", "timeOfDay": "...", "camera": "eye_level", "shotSize": "close_up", "realNames": []}],
+  "cuts": [{"id": "...", "actionEn": "...", "location": "...", "timeOfDay": "...", "camera": "eye_level", "shotSize": "close_up", "lighting": "golden_hour", "realNames": []}],
   "scenes": [{"id": "...", "sceneEn": "..."}],
   "characters": [{"key": "...", "descriptionEn": "..."}],
   "realNames": []
@@ -143,6 +159,9 @@ ${JSON.stringify(characters, null, 2)}`;
           : undefined,
         shotSize: (VALID_SIZES as readonly string[]).includes(c.shotSize as string)
           ? (c.shotSize as AssistCutResult["shotSize"])
+          : undefined,
+        lighting: (VALID_LIGHTINGS as readonly string[]).includes(c.lighting as string)
+          ? (c.lighting as AssistCutResult["lighting"])
           : undefined,
         realNames: Array.isArray(c.realNames) ? c.realNames.map(String) : [],
       }));
