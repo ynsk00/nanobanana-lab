@@ -74,6 +74,21 @@ UI・料金計算・アスペクト比選択がすべて追従する設計を壊
 Flow と Storyboard は IndexedDB / canvas / React Flow に依存するため、
 `next/dynamic` の `ssr: false` で読み込んでいる。この構造を変えない。
 
+### 6. 生成プロンプトは「段落構造の自然文」で書く
+
+`lib/storyboard/prompt.ts` の `buildCutPrompt` は Shot / Action / Characters / Setting /
+Notes / Style / Constraints の段落を空行で区切った英語の自然文を出力する。
+Gemini / GPT Image はキーワード列挙より場面描写のほうが良く反応し、ネガティブプロンプト機構も
+無いため、**`masterpiece, best quality` のようなタグ列や `avoid: extra fingers` のような
+否定タグを足さないこと。** 避けたい要素は `Do not include: …` の1文にする。
+プロンプトに要素を足すときは、既存の段落のどこに属するかを決め、完結した文として追加する。
+
+### 7. モデル定義に解像度を足すときは `imageSizes` / `pricePerImageBySize` を使う
+
+Gemini の `imageSize`（1K/2K/4K）は `lib/pricing.ts` の `imageSizes` を持つモデルにのみ
+UI が出て、API ルートも `model.imageSizes.includes()` を通った値しか送らない。
+単価は `priceForImage(model, imageSize)` で引く。
+
 ## Storyboard モードの処理の流れ
 
 字コンテ（テキスト）から絵コンテ画像までの経路：
@@ -84,7 +99,7 @@ Flow と Storyboard は IndexedDB / canvas / React Flow に依存するため、
 シーン + カット表
   ↓  ユーザーがカット表で編集（ト書き・アングル・ショットサイズ・構図・キャラ紐付け）
   ↓  /api/storyboard/assist （ト書きを英訳 + 実在人名を検出）
-  ↓  lib/storyboard/prompt.ts （カメラ辞書 + スタイルプリセットでプロンプト組み立て）
+  ↓  lib/storyboard/prompt.ts （cutPromptOptions → buildCutPrompt。右パネルの「送信プロンプト」も同じ経路で事前表示）
   ↓  guard.ts assertPromptSafe() ← 実在人名が残っていればここで遮断
   ↓  /api/generate （直列キューで1カットずつ。キャラ参照画像を全カットに同梱）
 カット画像
@@ -98,9 +113,10 @@ PDF / PNG 書き出し
 
 ## よくある落とし穴
 
-- `lib/storyboard/types.ts` の `CameraAngle` / `ShotSize` / `Composition` は
+- `lib/storyboard/types.ts` の `CameraAngle` / `ShotSize` / `Composition` / `Lighting` / `Lens` は
   型・日本語ラベル辞書（types.ts）・英語フレーズ辞書（prompt.ts）の**3箇所が対応**している。
-  値を追加するときは3箇所すべてを更新する
+  値を追加するときは3箇所すべてを更新する。英語フレーズは「文の中に収まる形」で書く
+  （例: `"from a high angle looking down"`）
 - `app/page.tsx` は1,350行の単一ファイル。分割の誘惑があるが、
   依頼されていない限りリファクタリングしない
 - 生成結果は IndexedDB にあるためサーバー側から検証できない。
