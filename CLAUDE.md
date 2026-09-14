@@ -89,6 +89,19 @@ Gemini の `imageSize`（1K/2K/4K）は `lib/pricing.ts` の `imageSizes` を持
 UI が出て、API ルートも `model.imageSizes.includes()` を通った値しか送らない。
 単価は `priceForImage(model, imageSize)` で引く。
 
+### 8. 生成後のAIチェックは generateOne の中で完結させ、自動リトライは1回まで
+
+`StoryboardEditor.tsx` の `generateOne` は `doGenerateOnce` → `runQaCheck` → 判定 → 必要なら
+`isRetry: true` で自身を1回だけ再帰、という構造。`runQueue` の直列 for ループはこれを
+await するだけなので、キューの直列性はここで担保されている。
+- `isRetry` の打ち切りを外さない（無限ループになる）
+- QA の失敗（401・ネットワーク・JSON不正）は生成の失敗にしない。`cut.qa` を未設定のまま
+  `console.warn` に留める
+- QA へ送るのは生成画像のサムネ・キャラ参照のサムネ・key・記述文のみ。**表示名（displayName）
+  や送信プロンプトは送らない**
+- 判定ロジック `qaVerdict` は `lib/storyboard/qa.ts` の純粋関数。閾値を変えるときは
+  `qa.test.ts` の境界値テストも更新する
+
 ## Storyboard モードの処理の流れ
 
 字コンテ（テキスト）から絵コンテ画像までの経路：
@@ -103,6 +116,8 @@ UI が出て、API ルートも `model.imageSizes.includes()` を通った値し
   ↓  guard.ts assertPromptSafe() ← 実在人名が残っていればここで遮断
   ↓  /api/generate （直列キューで1カットずつ。キャラ参照画像を全カットに同梱）
 カット画像
+  ↓  /api/storyboard/qa （視覚モデルで自己採点: 文字混入 / ト書き一致 / キャラ一致 / スタイル）
+  ↓  lib/storyboard/qa.ts qaVerdict() → "retry" なら generateOne 内で1回だけ自動再生成
   ↓  lib/storyboard/sheet.ts （canvas で絵コンテシートに合成）
   ↓  lib/storyboard/pdf.ts
 PDF / PNG 書き出し

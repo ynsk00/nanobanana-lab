@@ -6,6 +6,7 @@
 import React from "react";
 import { Button } from "@/components/ui";
 import { findNameViolations } from "@/lib/storyboard/guard";
+import { qaVerdict } from "@/lib/storyboard/qa";
 import {
   CAMERA_LABELS,
   OVERLAY_LABELS,
@@ -24,6 +25,16 @@ const STATUS_BADGE: Record<Cut["status"], { label: string; cls: string }> = {
   done: { label: "完了", cls: "bg-emerald-900/50 text-emerald-300" },
   error: { label: "エラー", cls: "bg-red-900/50 text-red-300" },
 };
+
+/** QA(生成後AIチェック)結果からバッジの見た目を決める */
+function qaBadge(qa: NonNullable<Cut["qa"]>): { label: string; cls: string; title: string } {
+  const verdict = qaVerdict(qa);
+  const title = qa.issues.join("\n");
+  if (verdict === "ok") return { label: "✅ OK", cls: "bg-emerald-900/50 text-emerald-300", title };
+  if (verdict === "retry")
+    return { label: "⚠ 要確認（再生成済）", cls: "bg-amber-900/50 text-amber-300", title };
+  return { label: "⚠ 要確認", cls: "bg-amber-900/50 text-amber-300", title };
+}
 
 const OVERLAY_STYLE: Record<string, string> = {
   NA: "bg-blue-900/40 text-blue-300",
@@ -144,6 +155,18 @@ export function CutTable({
                 )}
               </div>
               <span className={`rounded px-1.5 py-0.5 text-[10px] ${badge.cls}`}>{badge.label}</span>
+              {cut.qa &&
+                (() => {
+                  const qb = qaBadge(cut.qa);
+                  return (
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[10px] ${qb.cls}`}
+                      title={qb.title || undefined}
+                    >
+                      {qb.label}
+                    </span>
+                  );
+                })()}
               <div className="flex-1" />
               <Button
                 variant="ghost"

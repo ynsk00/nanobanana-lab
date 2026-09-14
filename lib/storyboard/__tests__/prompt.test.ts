@@ -3,7 +3,7 @@
 // テスト用のプロジェクト/カットは架空の題材（猫と会社員）で作る。
 
 import { describe, expect, it } from "vitest";
-import { buildCutPrompt } from "../prompt";
+import { buildCutPrompt, characterSentence } from "../prompt";
 import type { CharacterSheet, Cut } from "../types";
 
 function makeCut(patch: Partial<Cut> = {}): Cut {
@@ -177,6 +177,20 @@ describe("buildCutPrompt: 段落構造", () => {
     const paragraphs = prompt.split("\n\n");
     // ショット / アクション / スタイル / 制約 の4段落のみ（キャラ/設定/補足は省略）
     expect(paragraphs.length).toBe(4);
+  });
+});
+
+describe("characterSentence: 外見記述が空の場合", () => {
+  it("descriptionJa/descriptionEnとも空なら '{key} appears in this shot.' になる（無意味な同語反復を避ける）", () => {
+    const noDesc: CharacterSheet = { key: "MAN_A", displayName: "会社員", descriptionJa: "" };
+    expect(characterSentence(noDesc, null)).toBe("MAN_A appears in this shot.");
+  });
+
+  it("記述が空でも参照画像があれば同一性の指示は続く", () => {
+    const noDesc: CharacterSheet = { key: "MAN_A", displayName: "会社員", descriptionJa: "" };
+    expect(characterSentence(noDesc, 0)).toBe(
+      "MAN_A appears in this shot. Keep exactly the same face, hairstyle and outfit as reference image @ref1."
+    );
   });
 });
 

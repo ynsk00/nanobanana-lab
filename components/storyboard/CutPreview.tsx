@@ -6,6 +6,7 @@ import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui";
 import * as db from "@/lib/db";
 import type { ImageAsset } from "@/lib/types";
+import { qaVerdict } from "@/lib/storyboard/qa";
 import {
   CAMERA_LABELS,
   COMPOSITION_LABELS,
@@ -28,6 +29,8 @@ export function CutPreview({
   onUpdate,
   onRegenerate,
   onRegenerateNoText,
+  onRerunQa,
+  onRegenerateWithHint,
   onExportPng,
   onZoom,
 }: {
@@ -41,6 +44,10 @@ export function CutPreview({
   onRegenerate: (id: string) => void;
   /** 文字混入リカバリ: no text 強調で再生成 */
   onRegenerateNoText: (id: string) => void;
+  /** 再生成はせず、現在の画像に対してAIチェック(QA)だけやり直す */
+  onRerunQa: (id: string) => void;
+  /** QAのrevisionHintを付けて参照付き編集で再生成 */
+  onRegenerateWithHint: (id: string) => void;
   onExportPng: (id: string) => void;
   /** プレビュー画像をクリックで拡大表示 */
   onZoom: (fullUrl: string) => void;
@@ -244,6 +251,52 @@ export function CutPreview({
           )}
         </div>
       </details>
+
+      {/* 生成後のAIチェック(QA) */}
+      {cut.resultAssetId && (
+        <div className="space-y-1 rounded border border-zinc-800 bg-zinc-900/40 p-2">
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              🔍 AIチェック
+            </p>
+            <Button
+              variant="ghost"
+              className="px-1.5 py-0.5 text-[10px]"
+              disabled={busy || cut.status === "generating"}
+              onClick={() => onRerunQa(cut.id)}
+            >
+              再チェック
+            </Button>
+          </div>
+          {cut.qa ? (
+            <>
+              <p className="text-[11px] text-zinc-400">
+                ト書き一致 {cut.qa.actionMatch}/5 ・ キャラ {cut.qa.characterMatch}/5 ・ スタイル{" "}
+                {cut.qa.styleMatch}/5 ・ 文字混入 {cut.qa.textDetected ? "あり" : "なし"}
+                {qaVerdict(cut.qa) === "retry" && cut.qa.autoRetried && "（自動再生成済）"}
+              </p>
+              {cut.qa.issues.length > 0 && (
+                <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-amber-300/90">
+                  {cut.qa.issues.map((issue, i) => (
+                    <li key={i}>{issue}</li>
+                  ))}
+                </ul>
+              )}
+              {cut.qa.revisionHint && (
+                <Button
+                  className="px-2 py-0.5 text-[11px]"
+                  disabled={busy || cut.status === "generating"}
+                  onClick={() => onRegenerateWithHint(cut.id)}
+                >
+                  この指摘で再生成
+                </Button>
+              )}
+            </>
+          ) : (
+            <p className="text-[11px] text-zinc-600">未チェック</p>
+          )}
+        </div>
+      )}
 
       {cut.error && (
         <p className="rounded bg-red-950/40 px-2 py-1.5 text-[11px] text-red-300">{cut.error}</p>

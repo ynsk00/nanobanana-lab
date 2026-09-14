@@ -171,8 +171,8 @@ function capitalize(s: string): string {
  * 参照画像を添付する場合は @refN 対応を明示する（/api/generate が @refN ラベルを付ける）
  */
 export function characterSentence(c: CharacterSheet, refIndex: number | null): string {
-  const desc = c.descriptionEn?.trim() || c.descriptionJa.trim() || c.key;
-  const base = `${c.key} is ${desc}.`;
+  const desc = c.descriptionEn?.trim() || c.descriptionJa.trim();
+  const base = desc ? `${c.key} is ${desc}.` : `${c.key} appears in this shot.`;
   if (refIndex !== null) {
     return `${base} Keep exactly the same face, hairstyle and outfit as reference image @ref${refIndex + 1}.`;
   }
@@ -237,6 +237,11 @@ export interface BuildPromptOptions {
   includeEditNote?: boolean;
   /** 文字混入リカバリ: no text を強調する */
   emphasizeNoText?: boolean;
+  /**
+   * AIチェック(QA)の指摘から再生成に足す英語1文（自動リトライ用）。
+   * editNote とは独立した段落として付与する（editNoteは汚さない）
+   */
+  extraRevision?: string;
 }
 
 /**
@@ -293,8 +298,17 @@ export function buildCutPrompt(opts: BuildPromptOptions): string {
 
   let prompt = paragraphs.join("\n\n");
 
+  // 修正指示(editNote)とQA指摘(extraRevision)は独立した段落として扱う。
+  // editNoteはユーザーの手入力なので上書きせず、両方あれば両方付与する
+  const revisionParagraphs: string[] = [];
   if (opts.includeEditNote && cut.editNote?.trim()) {
-    prompt += `\n\nRevision request (apply to the previous image): ${cut.editNote.trim()}`;
+    revisionParagraphs.push(`Revision request (apply to the previous image): ${cut.editNote.trim()}`);
+  }
+  if (opts.extraRevision?.trim()) {
+    revisionParagraphs.push(`Fix for this attempt: ${opts.extraRevision.trim()}`);
+  }
+  if (revisionParagraphs.length) {
+    prompt += `\n\n${revisionParagraphs.join("\n\n")}`;
   }
   return prompt;
 }
@@ -337,7 +351,7 @@ export function projectStyleText(p: StoryboardProject): string | undefined {
 export function cutPromptOptions(
   p: StoryboardProject,
   cut: Cut,
-  extra?: { includeEditNote?: boolean; emphasizeNoText?: boolean }
+  extra?: { includeEditNote?: boolean; emphasizeNoText?: boolean; extraRevision?: string }
 ): BuildPromptOptions {
   const characters = p.characters.filter((c) => cut.characters.includes(c.key));
   const refChars = characters.filter((c) => c.imageAssetId);
@@ -355,6 +369,7 @@ export function cutPromptOptions(
     negativeText: p.negativePrompt,
     includeEditNote: extra?.includeEditNote,
     emphasizeNoText: extra?.emphasizeNoText,
+    extraRevision: extra?.extraRevision,
   };
 }
 

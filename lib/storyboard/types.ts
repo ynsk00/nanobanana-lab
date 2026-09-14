@@ -186,6 +186,29 @@ export interface Cut {
   thumbUrl?: string;
   status: CutStatus;
   error?: string;
+
+  /**
+   * 生成後のAIチェック(視覚モデルによる自己採点)結果。undefined = 未チェック。
+   * /api/storyboard/qa の結果をそのまま保持する（qaVerdict で ok/warn/retry を判定）
+   */
+  qa?: {
+    /** 画像内に文字・字幕・ロゴ・透かしがあるか */
+    textDetected: boolean;
+    /** ト書きの出来事が描かれているか(0-5) */
+    actionMatch: number;
+    /** 登場人物の人数・外見の一致度(0-5) */
+    characterMatch: number;
+    /** 指定スタイルらしさ(0-5) */
+    styleMatch: number;
+    /** 日本語の短い指摘（最大5件） */
+    issues: string[];
+    /** 再生成時にプロンプトへ足す英語1文（問題なければ空文字） */
+    revisionHint: string;
+    /** チェック実行時刻 */
+    checkedAt: number;
+    /** この結果が自動リトライ後のものか（true なら以降は自動リトライしない） */
+    autoRetried: boolean;
+  };
 }
 
 /** キャラシート。表示名 → プレースホルダー記述文 + 基準画像 */
@@ -234,6 +257,8 @@ export interface StoryboardProject {
   styleImageEn?: string;
   /** トーン参照画像を参照画像として毎カットに添付するか（既定: true） */
   attachStyleImage?: boolean;
+  /** 生成後にAIチェック(視覚モデルでの自己採点)を走らせるか（既定: true） */
+  autoQa?: boolean;
   /** 避けたい要素（ネガティブ）。Geminiにはnegative_promptパラメータが無いため "Do not include: ..." としてプロンプトに埋め込む */
   negativePrompt?: string;
   modelKey: string;

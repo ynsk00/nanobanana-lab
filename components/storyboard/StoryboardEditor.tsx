@@ -15,12 +15,13 @@ import { BottomDock } from "@/components/storyboard/BottomDock";
 import * as db from "@/lib/db";
 import { getApiKey } from "@/lib/settings";
 import { MODELS, getModel, priceForImage } from "@/lib/pricing";
-import { requestGeneration } from "@/lib/generation";
-import { downloadBlob, fileToDataUrl, genId, makeThumbnail } from "@/lib/image";
+import { MAX_UPLOAD_BYTES, fitUnderLimit, payloadLen, requestGeneration } from "@/lib/generation";
+import { compressForUpload, downloadBlob, fileToDataUrl, genId, makeThumbnail } from "@/lib/image";
 import type { ImageAsset } from "@/lib/types";
 import { dedupeCutTexts, mergeWithPrevious, parseScript, splitCut } from "@/lib/storyboard/parse";
 import {
   DEFAULT_STYLE,
+  STYLE_PRESETS,
   buildCharacterSheetPrompt,
   buildCutPrompt,
   buildStandingFromFacePrompt,
@@ -34,6 +35,7 @@ import {
   findNameViolations,
   replaceNames,
 } from "@/lib/storyboard/guard";
+import { qaVerdict } from "@/lib/storyboard/qa";
 import { buildStoryboardSheets, type SheetCut } from "@/lib/storyboard/sheet";
 import { composeCutPng } from "@/lib/storyboard/sheet";
 import { canvasesToPdf } from "@/lib/storyboard/pdf";
@@ -41,6 +43,7 @@ import type { CharacterSheet, Cut, Scene, StoryboardProject } from "@/lib/storyb
 import type { ParseResponse } from "@/app/api/storyboard/parse/route";
 import type { AssistResponse } from "@/app/api/storyboard/assist/route";
 import type { StyleResponse } from "@/app/api/storyboard/style/route";
+import type { QaResponse } from "@/app/api/storyboard/qa/route";
 
 const PROJECT_ID = "sb_default";
 
@@ -361,11 +364,24 @@ export default function StoryboardEditor() {
   }, [geminiKey]);
 
   // --- 3. 生成（唯一のAPI送信経路。必ず assertPromptSafe を通す） ---
-  const generateOne = useCallback(
-    async (cutId: string, opts: { useEditNote?: boolean; emphasizeNoText?: boolean } = {}) => {
+  /** generateOne に渡すオプション */
+  type GenOpts = {
+    /** 修正指示(editNote)を含めて参照付き編集で再生成する */
+    useEditNote?: boolean;
+    /** 文字混入リカバリ: no text を強調する */
+    emphasizeNoText?: boolean;
+    /** QAの自動リトライによる呼び出しか（trueなら以降は自動リトライしない） */
+    isRetry?: boolean;
+    /** QA指摘から足す英語1文。指定時は直前の生成画像を参照付き編集の入力にする */
+    extraRevision?: string;
+  };
+
+  // 1回分の生成（プロンプト組み立て→送信→保存）。QA・自動リトライは含まない
+  const doGenerateOnce = useCallback(
+    async (cutId: string, opts: GenOpts = {}): Promise<string> => {
       const p = projectRef.current;
       const cut = p.cuts.find((c) => c.id === cutId);
-      if (!cut) return;
+      if (!cut) throw new Error("カットが見つかりません");
       const chars = p.characters.filter((c) => cut.characters.includes(c.key));
       const refChars = chars.filter((c) => c.imageAssetId);
 
@@ -377,6 +393,7 @@ export default function StoryboardEditor() {
         const promptOptions = cutPromptOptions(p, cut, {
           includeEditNote: opts.useEditNote,
           emphasizeNoText: opts.emphasizeNoText,
+          extraRevision: opts.extraRevision,
         });
 
         // トーン参照画像を末尾の参照として同梱（@refN の N はキャラ参照の後）。
@@ -397,9 +414,10 @@ export default function StoryboardEditor() {
 
         updateCut(cutId, { status: "generating", generatedPrompt: prompt, error: undefined });
 
-        // 修正指示がある場合は現画像を入力にして参照付き編集
+        // 修正指示 or QA指摘がある場合は現画像を入力にして参照付き編集
         const inputs: string[] = [];
-        if (opts.useEditNote && cut.editNote?.trim() && cut.resultAssetId) {
+        const useRefInput = (opts.useEditNote && cut.editNote?.trim()) || opts.extraRevision?.trim();
+        if (useRefInput && cut.resultAssetId) {
           const cur = await assetUrl(cut.resultAssetId);
           if (cur) inputs.push(cur);
         }
@@ -424,6 +442,7 @@ export default function StoryboardEditor() {
         await db.put("assets", { id: assetId, dataUrl: img.dataUrl });
         const thumb = await makeThumbnail(img.dataUrl, 480);
         updateCut(cutId, { status: "done", resultAssetId: assetId, thumbUrl: thumb, error: undefined });
+        return img.dataUrl;
       } catch (e) {
         const m =
           e instanceof NameGuardError
@@ -436,6 +455,151 @@ export default function StoryboardEditor() {
       }
     },
     [geminiKey, openaiKey, updateCut]
+  );
+
+  /**
+   * 生成後のAIチェック(QA)。/api/storyboard/qa を呼び、結果を返す。
+   * 失敗しても生成結果は破棄しない: console.warn に留めて null を返す（cut.qa は未設定のまま）。
+   * QAへ送る文字列にキャラの表示名(displayName)は含めない（key + descriptionEn/Ja のみ）
+   */
+  const runQaCheck = useCallback(
+    async (cutId: string, resultDataUrl: string): Promise<QaResponse | null> => {
+      const p = projectRef.current;
+      const cut = p.cuts.find((c) => c.id === cutId);
+      if (!cut) return null;
+      try {
+        const chars = p.characters.filter((c) => cut.characters.includes(c.key));
+        const refChars = chars.filter((c) => c.imageAssetId);
+        const refUrlPairs = (
+          await Promise.all(
+            refChars.map(async (c) => {
+              const url = await assetUrl(c.imageAssetId);
+              return url ? { key: c.key, url } : null;
+            })
+          )
+        ).filter((x): x is { key: string; url: string } => !!x);
+
+        // 送信サイズ: 生成画像は長辺1024、キャラ参照は長辺512に縮小
+        const imageThumb = await compressForUpload(resultDataUrl, 1024, 0.85);
+        const refThumbsAll = await Promise.all(
+          refUrlPairs.map((r) => compressForUpload(r.url, 512, 0.8))
+        );
+
+        // 合計が上限を超える場合は fitUnderLimit で段階縮小し、それでも超えるなら
+        // 参照画像を後ろから落として再試行する
+        let keptCount = refThumbsAll.length;
+        let fittedImage = imageThumb;
+        let fittedRefs: string[] = refThumbsAll;
+        for (;;) {
+          const fitted = await fitUnderLimit([imageThumb], refThumbsAll.slice(0, keptCount));
+          fittedImage = fitted.inputs[0] ?? imageThumb;
+          fittedRefs = fitted.refs;
+          const total = payloadLen([fittedImage]) + payloadLen(fittedRefs);
+          if (total <= MAX_UPLOAD_BYTES || keptCount === 0) break;
+          keptCount -= 1;
+        }
+
+        const characters = chars.map((c) => {
+          const idx = refUrlPairs.findIndex((r) => r.key === c.key);
+          const refImage = idx >= 0 && idx < fittedRefs.length ? fittedRefs[idx] : undefined;
+          return {
+            key: c.key,
+            descriptionEn: c.descriptionEn?.trim() || c.descriptionJa.trim() || undefined,
+            refImage,
+          };
+        });
+
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (geminiKey) headers["x-gemini-api-key"] = geminiKey;
+        const res = await fetch("/api/storyboard/qa", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            image: fittedImage,
+            actionEn: cut.promptEn || "",
+            actionJa: cut.textJa,
+            characters,
+            styleLabel: STYLE_PRESETS[p.stylePreset]?.label ?? p.stylePreset,
+            expectedCharacterKeys: chars.map((c) => c.key),
+          }),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(j.error || `AIチェックに失敗しました (${res.status})`);
+        }
+        return (await res.json()) as QaResponse;
+      } catch (e) {
+        // QA自体の失敗は生成の失敗扱いにしない。cut.qa は未設定のまま
+        console.warn("[storyboard] AIチェックに失敗しました:", e instanceof Error ? e.message : e);
+        return null;
+      }
+    },
+    [geminiKey]
+  );
+
+  /**
+   * 生成 + 生成後のAIチェック(QA) + 必要なら1回だけ自動リトライ、まで完結させる。
+   * runQueue の直列キューはこれを await するだけで、QA・自動リトライも自然に直列のまま進む
+   */
+  const generateOne = useCallback(
+    async (cutId: string, opts: GenOpts = {}): Promise<void> => {
+      const dataUrl = await doGenerateOnce(cutId, opts);
+
+      if (projectRef.current.autoQa === false) return;
+
+      const qa = await runQaCheck(cutId, dataUrl);
+      if (!qa) return; // QA失敗時は cut.qa を未設定のまま(console.warnのみ)
+
+      const autoRetried = opts.isRetry ?? false;
+      updateCut(cutId, { qa: { ...qa, checkedAt: Date.now(), autoRetried } });
+
+      if (qaVerdict(qa) === "retry" && !autoRetried) {
+        // リトライ側のQAが失敗しても「再生成済」と分かるよう、先に立てておく
+        updateCut(cutId, { qa: { ...qa, checkedAt: Date.now(), autoRetried: true } });
+        // 自動リトライは1回まで。isRetry を必ず立てて打ち切る
+        if (qa.textDetected) {
+          await generateOne(cutId, { emphasizeNoText: true, isRetry: true });
+        } else {
+          await generateOne(cutId, {
+            extraRevision: qa.revisionHint || undefined,
+            isRetry: true,
+          });
+        }
+      }
+    },
+    [doGenerateOnce, runQaCheck, updateCut]
+  );
+
+  /** プレビューの「再チェック」: 再生成はせず、現在の画像に対してQAだけやり直す */
+  const rerunQa = useCallback(
+    async (cutId: string) => {
+      const p = projectRef.current;
+      const cut = p.cuts.find((c) => c.id === cutId);
+      if (!cut?.resultAssetId) return;
+      const url = await assetUrl(cut.resultAssetId);
+      if (!url) return;
+      const qa = await runQaCheck(cutId, url);
+      if (qa) {
+        updateCut(cutId, {
+          qa: { ...qa, checkedAt: Date.now(), autoRetried: cut.qa?.autoRetried ?? false },
+        });
+      } else {
+        setError("AIチェックに失敗しました。時間をおいて再度お試しください。");
+      }
+    },
+    [runQaCheck, updateCut]
+  );
+
+  /** プレビューの「この指摘で再生成」: QAのrevisionHintを付けて参照付き編集で再生成 */
+  const regenerateWithQaHint = useCallback(
+    (cutId: string) => {
+      const p = projectRef.current;
+      const cut = p.cuts.find((c) => c.id === cutId);
+      const hint = cut?.qa?.revisionHint?.trim();
+      if (!hint) return;
+      generateOne(cutId, { extraRevision: hint }).catch(() => {});
+    },
+    [generateOne]
   );
 
   // --- 4. 一括生成（直列キュー） ---
@@ -992,6 +1156,8 @@ export default function StoryboardEditor() {
             onRegenerateNoText={(id) =>
               generateOne(id, { useEditNote: true, emphasizeNoText: true }).catch(() => {})
             }
+            onRerunQa={rerunQa}
+            onRegenerateWithHint={regenerateWithQaHint}
             onExportPng={exportCutPng}
             onZoom={(url) =>
               setLightbox({ id: selectedCut?.id ?? "cut", dataUrl: url, mimeType: "image/png" })

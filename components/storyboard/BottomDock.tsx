@@ -226,6 +226,14 @@ export function BottomDock({
                 ⚠ 実写風は肖像権に配慮して使用
               </p>
             )}
+            <label className="mt-1 flex items-center gap-1 text-[9px] text-zinc-400">
+              <input
+                type="checkbox"
+                checked={project.autoQa !== false}
+                onChange={(e) => onPatch({ autoQa: e.target.checked })}
+              />
+              生成後にAIチェック（1カット約$0.001・Geminiキー使用）
+            </label>
           </div>
 
           {/* col2: 含めたくないもの + 共通トーン */}
